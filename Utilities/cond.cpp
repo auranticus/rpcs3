@@ -1,4 +1,4 @@
-#include "cond.h"
+﻿#include "cond.h"
 #include "sync.h"
 #include "lockless.h"
 
@@ -12,7 +12,7 @@ void cond_variable::imp_wait(u32 _old, u64 _timeout) noexcept
 	verify(HERE), _old;
 
 	// Wait with timeout
-	m_value.wait(_old, atomic_wait_timeout{_timeout > max_timeout ? UINT64_MAX : _timeout * 1000});
+	m_value.wait<c_signal_mask>(_old, atomic_wait_timeout{_timeout > max_timeout ? UINT64_MAX : _timeout * 1000});
 
 	// Cleanup
 	m_value.atomic_op([](u32& value)
@@ -38,7 +38,7 @@ void cond_variable::imp_wake(u32 _count) noexcept
 		}
 
 		// Add signal
-		value += c_signal_mask & -c_signal_mask;
+		value += c_signal_mask & (0 - c_signal_mask);
 		return true;
 	});
 
@@ -47,7 +47,7 @@ void cond_variable::imp_wake(u32 _count) noexcept
 		return;
 	}
 
-	if (_count > 1 || ((_old + (c_signal_mask & -c_signal_mask)) & c_signal_mask) == c_signal_mask)
+	if (_count > 1 || ((_old + (c_signal_mask & (0 - c_signal_mask))) & c_signal_mask) == c_signal_mask)
 	{
 		// Resort to notify_all if signal count reached max
 		m_value.notify_all();

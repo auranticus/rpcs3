@@ -2,6 +2,7 @@
 
 #include <QFileDialog>
 #include <QCoreApplication>
+#include <QHBoxLayout>
 #include <QPushButton>
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
@@ -31,18 +32,20 @@ vfs_dialog_tab::vfs_dialog_tab(vfs_settings_info settingsInfo, std::shared_ptr<g
 
 	m_dirList->setMinimumWidth(m_dirList->sizeHintForColumn(0));
 
-	QPushButton* addDir = new QPushButton(tr("+"));
+	QPushButton* addDir = new QPushButton(QStringLiteral("+"));
+	addDir->setToolTip(tr("Add new directory"));
 	addDir->setFixedWidth(addDir->sizeHint().height()); // Make button square
 	connect(addDir, &QAbstractButton::clicked, this, &vfs_dialog_tab::AddNewDirectory);
 
-	QPushButton* removeDir = new QPushButton(tr("-"));
+	QPushButton* removeDir = new QPushButton(QStringLiteral("-"));
+	removeDir->setToolTip(tr("Remove directory"));
 	removeDir->setFixedWidth(removeDir->sizeHint().height()); // Make button square
 	removeDir->setEnabled(false);
 	connect(removeDir, &QAbstractButton::clicked, this, &vfs_dialog_tab::RemoveDirectory);
 
 	QHBoxLayout* selectedConfigLayout = new QHBoxLayout;
 	m_selectedConfigLabel = new QLabel(current_dir.isEmpty() ? EmptyPath : current_dir);
-	selectedConfigLayout->addWidget(new QLabel(m_info.name + tr(" directory:")));
+	selectedConfigLayout->addWidget(new QLabel(tr("%0 directory:").arg(m_info.name)));
 	selectedConfigLayout->addWidget(m_selectedConfigLabel);
 	selectedConfigLayout->addStretch();
 	selectedConfigLayout->addWidget(addDir);
@@ -91,7 +94,7 @@ void vfs_dialog_tab::Reset()
 
 void vfs_dialog_tab::AddNewDirectory()
 {
-	QString dir = QFileDialog::getExistingDirectory(nullptr, tr("Choose a directory"), QCoreApplication::applicationDirPath());
+	QString dir = QFileDialog::getExistingDirectory(nullptr, tr("Choose a directory"), QCoreApplication::applicationDirPath(), QFileDialog::DontResolveSymlinks);
 
 	if (dir.isEmpty())
 		return;

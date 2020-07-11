@@ -48,8 +48,8 @@ namespace rsx
 
 		// Control0
 		bool enabled() const;
-		u16  min_lod() const;
-		u16  max_lod() const;
+		f32 min_lod() const;
+		f32 max_lod() const;
 		rsx::texture_max_anisotropy   max_aniso() const;
 		bool alpha_kill_enabled() const;
 
@@ -65,10 +65,11 @@ namespace rsx
 		std::pair<std::array<u8, 4>, std::array<u8, 4>> decoded_remap() const;
 
 		// Filter
-		float bias() const;
+		f32 bias() const;
 		rsx::texture_minify_filter  min_filter() const;
 		rsx::texture_magnify_filter  mag_filter() const;
 		u8  convolution_filter() const;
+		u8  argb_signed() const;
 		bool a_signed() const;
 		bool r_signed() const;
 		bool g_signed() const;
@@ -115,11 +116,11 @@ namespace rsx
 
 		// Control0
 		bool enabled() const;
-		u16 min_lod() const;
-		u16 max_lod() const;
+		f32 min_lod() const;
+		f32 max_lod() const;
 
 		// Filter
-		u16 bias() const;
+		f32 bias() const;
 		rsx::texture_minify_filter min_filter() const;
 		rsx::texture_magnify_filter mag_filter() const;
 

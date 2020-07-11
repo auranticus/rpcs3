@@ -9,6 +9,8 @@
 
 #include <map>
 
+LOG_CHANNEL(spu_log, "SPU");
+
 struct lv2_event_queue;
 struct lv2_spu_group;
 struct lv2_int_tag;
@@ -98,14 +100,14 @@ enum : u64
 	SPU_INT2_STAT_SPU_MAILBOX_THRESHOLD_INT    = (1ull << 4),
 };
 
-enum
+enum : u32
 {
 	SPU_RUNCNTL_STOP_REQUEST = 0,
 	SPU_RUNCNTL_RUN_REQUEST  = 1,
 };
 
 // SPU Status Register bits (not accurate)
-enum
+enum : u32
 {
 	SPU_STATUS_STOPPED             = 0x0,
 	SPU_STATUS_RUNNING             = 0x1,
@@ -113,6 +115,7 @@ enum
 	SPU_STATUS_STOPPED_BY_HALT     = 0x4,
 	SPU_STATUS_WAITING_FOR_CHANNEL = 0x8,
 	SPU_STATUS_SINGLE_STEP         = 0x10,
+	SPU_STATUS_IS_ISOLATED         = 0x80,
 };
 
 enum : u32
@@ -167,9 +170,9 @@ public:
 	// Returns true on success
 	bool try_push(u32 value)
 	{
-		const u64 old = data.fetch_op([=](u64& data)
+		const u64 old = data.fetch_op([value](u64& data)
 		{
-			if (UNLIKELY(data & bit_count))
+			if (data & bit_count) [[unlikely]]
 			{
 				data |= bit_wait;
 			}
@@ -185,7 +188,7 @@ public:
 	// Push performing bitwise OR with previous value, may require notification
 	void push_or(cpu_thread& spu, u32 value)
 	{
-		const u64 old = data.fetch_op([=](u64& data)
+		const u64 old = data.fetch_op([value](u64& data)
 		{
 			data &= ~bit_wait;
 			data |= bit_count | value;
@@ -216,7 +219,7 @@ public:
 	{
 		const u64 old = data.fetch_op([&](u64& data)
 		{
-			if (LIKELY(data & bit_count))
+			if (data & bit_count) [[likely]]
 			{
 				out = static_cast<u32>(data);
 				data = 0;
@@ -228,6 +231,20 @@ public:
 		});
 
 		return (old & bit_count) != 0;
+	}
+
+	// Reading without modification
+	bool try_read(u32& out) const
+	{
+		const u64 old = data.load();
+
+		if (old & bit_count) [[likely]]
+		{
+			out = static_cast<u32>(old);
+			return true;
+		}
+
+		return false;
 	}
 
 	// Pop unconditionally (loading last value), may require notification
@@ -266,6 +283,7 @@ struct spu_channel_4_t
 	{
 		u8 waiting;
 		u8 count;
+		u8 _pad[2];
 		u32 value0;
 		u32 value1;
 		u32 value2;
@@ -278,15 +296,14 @@ public:
 	void clear()
 	{
 		values.release({});
-		value3.release(0);
 	}
 
 	// push unconditionally (overwriting latest value), returns true if needs signaling
 	void push(cpu_thread& spu, u32 value)
 	{
-		value3.store(value);
+		value3.release(value);
 
-		if (values.atomic_op([=](sync_var_t& data) -> bool
+		if (values.atomic_op([value](sync_var_t& data) -> bool
 		{
 			switch (data.count++)
 			{
@@ -336,14 +353,31 @@ public:
 		});
 	}
 
-	u32 get_count()
+	// returns current queue size without modification
+	uint try_read(u32 (&out)[4]) const
 	{
-		return values.raw().count;
+		const sync_var_t data = values.load();
+		const uint result = data.count;
+
+		if (result != 0)
+		{
+			out[0] = data.value0;
+			out[1] = data.value1;
+			out[2] = data.value2;
+			out[3] = value3;
+		}
+
+		return result;
+	}
+
+	u32 get_count() const
+	{
+		return std::as_const(values).raw().count;
 	}
 
 	void set_values(u32 count, u32 value0, u32 value1 = 0, u32 value2 = 0, u32 value3 = 0)
 	{
-		this->values.raw() = { 0, static_cast<u8>(count), value0, value1, value2 };
+		this->values.raw() = { 0, static_cast<u8>(count), {}, value0, value1, value2 };
 		this->value3 = value3;
 	}
 };
@@ -353,7 +387,7 @@ struct spu_int_ctrl_t
 	atomic_t<u64> mask;
 	atomic_t<u64> stat;
 
-	std::shared_ptr<struct lv2_int_tag> tag;
+	std::weak_ptr<struct lv2_int_tag> tag;
 
 	void set(u64 ints);
 
@@ -366,7 +400,7 @@ struct spu_int_ctrl_t
 	{
 		mask.release(0);
 		stat.release(0);
-		tag = nullptr;
+		tag.reset();
 	}
 };
 
@@ -497,8 +531,11 @@ public:
 class spu_thread : public cpu_thread
 {
 public:
-	virtual std::string get_name() const override;
-	virtual std::string dump() const override;
+	virtual std::string dump_all() const override;
+	virtual std::string dump_regs() const override;
+	virtual std::string dump_callstack() const override;
+	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
+	virtual std::string dump_misc() const override;
 	virtual void cpu_task() override final;
 	virtual void cpu_mem() override;
 	virtual void cpu_unmem() override;
@@ -510,9 +547,15 @@ public:
 	static const u32 id_step = 1;
 	static const u32 id_count = 2048;
 
-	spu_thread(vm::addr_t ls, lv2_spu_group* group, u32 index, std::string_view name);
+	spu_thread(vm::addr_t ls, lv2_spu_group* group, u32 index, std::string_view name, u32 lv2_id, bool is_isolated = false);
 
 	u32 pc = 0;
+
+	// May be used internally by recompilers.
+	u32 base_pc = 0;
+
+	// May be used by recompilers.
+	u8* memory_base_addr = vm::g_base_addr;
 
 	// General-Purpose Registers
 	std::array<v128, 128> gpr;
@@ -526,11 +569,26 @@ public:
 	u32 mfc_size = 0;
 	u32 mfc_barrier = -1;
 	u32 mfc_fence = -1;
+
+	// MFC proxy command data
+	spu_mfc_cmd mfc_prxy_cmd;
+	shared_mutex mfc_prxy_mtx;
 	atomic_t<u32> mfc_prxy_mask;
+
+	// Tracks writes to MFC proxy command data
+	union
+	{
+		u8 all;
+		bf_t<u8, 0, 1> lsa;
+		bf_t<u8, 1, 1> eal;
+		bf_t<u8, 2, 1> eah;
+		bf_t<u8, 3, 1> tag_size;
+		bf_t<u8, 4, 1> cmd;
+	} mfc_prxy_write_state{};
 
 	// Reservation Data
 	u64 rtime = 0;
-	std::array<v128, 8> rdata{};
+	alignas(64) std::array<v128, 8> rdata{};
 	u32 raddr = 0;
 
 	u32 srr0;
@@ -541,15 +599,15 @@ public:
 	spu_channel ch_stall_stat;
 	spu_channel ch_atomic_stat;
 
-	spu_channel_4_t ch_in_mbox;
+	spu_channel_4_t ch_in_mbox{};
 
 	spu_channel ch_out_mbox;
 	spu_channel ch_out_intr_mbox;
 
-	u64 snr_config; // SPU SNR Config Register
+	u64 snr_config = 0; // SPU SNR Config Register
 
-	spu_channel ch_snr1; // SPU Signal Notification Register 1
-	spu_channel ch_snr2; // SPU Signal Notification Register 2
+	spu_channel ch_snr1{}; // SPU Signal Notification Register 1
+	spu_channel ch_snr2{}; // SPU Signal Notification Register 2
 
 	atomic_t<u32> ch_event_mask;
 	atomic_t<u32> ch_event_stat;
@@ -559,19 +617,32 @@ public:
 	u32 ch_dec_value; // written decrementer value
 
 	atomic_t<u32> run_ctrl; // SPU Run Control register (only provided to get latest data written)
-	atomic_t<u32> status; // SPU Status register
-	atomic_t<u32> npc; // SPU Next Program Counter register
+	shared_mutex run_ctrl_mtx;
 
+	struct alignas(8) status_npc_sync_var
+	{
+		u32 status; // SPU Status register
+		u32 npc; // SPU Next Program Counter register
+	};
+
+	const bool is_isolated;
+	atomic_t<status_npc_sync_var> status_npc;
 	std::array<spu_int_ctrl_t, 3> int_ctrl; // SPU Class 0, 1, 2 Interrupt Management
 
 	std::array<std::pair<u32, std::weak_ptr<lv2_event_queue>>, 32> spuq; // Event Queue Keys for SPU Thread
 	std::weak_ptr<lv2_event_queue> spup[64]; // SPU Ports
+	spu_channel exit_status{}; // Threaded SPU exit status (not a channel, but the interface fits)
+	atomic_t<u32> last_exit_status; // Value to be written in exit_status after checking group termination
 
 	const u32 index; // SPU index
 	const u32 offset; // SPU LS offset
-	lv2_spu_group* const group; // SPU Thread Group
+private:
+	lv2_spu_group* const group; // SPU Thread Group (only safe to access in the spu thread itself)
+public:
+	const u32 lv2_id; // The actual id that is used by syscalls
 
-	lf_value<std::string> spu_name; // Thread name
+	// Thread name
+	stx::atomic_cptr<std::string> spu_tname;
 
 	std::unique_ptr<class spu_recompiler_base> jit; // Recompiler instance
 
@@ -581,9 +652,10 @@ public:
 
 	u64 saved_native_sp = 0; // Host thread's stack pointer for emulated longjmp
 
-	u8* memory_base_addr = vm::g_base_addr;
-
 	std::array<v128, 0x4000> stack_mirror; // Return address information
+
+	const char* current_func{}; // Current STOP or RDCH blocking function
+	u64 start_time{}; // Starting time of STOP or RDCH bloking function
 
 	void push_snr(u32 number, u32 value);
 	void do_dma_transfer(const spu_mfc_cmd& args);
@@ -597,6 +669,7 @@ public:
 	u32 get_events(bool waiting = false);
 	void set_events(u32 mask);
 	void set_interrupt_status(bool enable);
+	bool check_mfc_interrupts(u32 nex_pc);
 	u32 get_ch_count(u32 ch);
 	s64 get_ch_value(u32 ch);
 	bool set_ch_value(u32 ch, u32 value);
@@ -627,11 +700,24 @@ public:
 
 	static u32 find_raw_spu(u32 id)
 	{
-		if (LIKELY(id < std::size(g_raw_spu_id)))
+		if (id < std::size(g_raw_spu_id)) [[likely]]
 		{
 			return g_raw_spu_id[id];
 		}
 
 		return -1;
+	}
+};
+
+class spu_function_logger
+{
+	spu_thread& spu;
+
+public:
+	spu_function_logger(spu_thread& spu, const char* func);
+
+	~spu_function_logger()
+	{
+		spu.start_time = 0;
 	}
 };

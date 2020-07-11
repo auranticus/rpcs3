@@ -13,7 +13,7 @@ struct sys_cond_attribute_t
 
 	union
 	{
-		u64 name_u64;
+		nse_t<u64, 1> name_u64;
 		char name[sizeof(u64)];
 	};
 };
@@ -26,24 +26,36 @@ struct lv2_cond final : lv2_obj
 	const s32 flags;
 	const u64 key;
 	const u64 name;
+	const u32 mtx_id;
 
 	std::shared_ptr<lv2_mutex> mutex; // Associated Mutex
 	atomic_t<u32> waiters{0};
 	std::deque<cpu_thread*> sq;
 
-	lv2_cond(u32 shared, s32 flags, u64 key, u64 name, std::shared_ptr<lv2_mutex> mutex)
+	lv2_cond(u32 shared, s32 flags, u64 key, u64 name, u32 mtx_id, std::shared_ptr<lv2_mutex> mutex)
 		: shared(shared)
-		, key(key)
 		, flags(flags)
+		, key(key)
 		, name(name)
+		, mtx_id(mtx_id)
 		, mutex(std::move(mutex))
 	{
-		this->mutex->cond_count++;
 	}
 
-	~lv2_cond()
+	CellError on_id_create()
 	{
-		this->mutex->cond_count--;
+		if (!mutex->obj_count.fetch_op([](typename lv2_mutex::count_info& info)
+		{
+			if (info.mutex_count)
+				return info.cond_count++, true;
+			return false;
+		}).second)
+		{
+			// Mutex has been destroyed, cannot create conditional variable
+			return CELL_ESRCH;
+		}
+
+		return {};
 	}
 };
 

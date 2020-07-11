@@ -286,7 +286,7 @@ namespace rsx
 				return 1u;
 			}
 
-			u32 count = (u32)draw_command_ranges.size();
+			u32 count = ::size32(draw_command_ranges);
 			if (draw_command_ranges.back().count == 0)
 			{
 				// Dangling barrier
@@ -400,7 +400,7 @@ namespace rsx
 
 				const u32 count = barrier.address - previous_barrier;
 				ret.push_back({ 0, vertex_counter, count });
-				previous_barrier = (u32)barrier.address;
+				previous_barrier = barrier.address;
 				vertex_counter += count;
 			}
 
@@ -474,19 +474,10 @@ namespace rsx
 		}
 	};
 
-	namespace
-	{
-		template<typename T, size_t... N, typename Args>
-		std::array<T, sizeof...(N)> fill_array(Args&& arg, std::index_sequence<N...>)
-		{
-			return{ T(N, std::forward<Args>(arg))... };
-		}
-	}
-
 	struct rsx_state
 	{
 	public:
-		std::array<u32, 0x10000 / 4> registers{};
+		std::array<u32, 0x10000 / 4> registers;
 		u32 register_previous_value;
 
 		template<u32 opcode>
@@ -537,13 +528,19 @@ namespace rsx
 		std::array<register_vertex_data_info, 16> register_vertex_info;
 		std::array<data_array_format_info, 16> vertex_arrays_info;
 
+	private:
+		template<typename T, size_t... N, typename Args>
+		static std::array<T, sizeof...(N)> fill_array(Args&& arg, std::index_sequence<N...>)
+		{
+			return{ T(N, std::forward<Args>(arg))... };
+		}
+
+	public:
 		rsx_state() :
 			fragment_textures(fill_array<fragment_texture>(registers, std::make_index_sequence<16>())),
 			vertex_textures(fill_array<vertex_texture>(registers, std::make_index_sequence<4>())),
 			vertex_arrays_info(fill_array<data_array_format_info>(registers, std::make_index_sequence<16>()))
 		{
-			//NOTE: Transform constants persist through a context reset (NPEB00913)
-			memset(transform_constants.data(), 0, 512 * 4 * sizeof(u32));
 		}
 
 		~rsx_state() = default;
@@ -657,7 +654,14 @@ namespace rsx
 
 		bool alpha_test_enabled() const
 		{
-			return decode<NV4097_SET_ALPHA_TEST_ENABLE>().alpha_test_enabled();
+			switch (surface_color())
+			{
+			case rsx::surface_color_format::x32:
+			case rsx::surface_color_format::w32z32y32x32:
+				return false;
+			default:
+				return decode<NV4097_SET_ALPHA_TEST_ENABLE>().alpha_test_enabled();
+			}
 		}
 
 		bool stencil_test_enabled() const
@@ -665,14 +669,41 @@ namespace rsx
 			return decode<NV4097_SET_STENCIL_TEST_ENABLE>().stencil_test_enabled();
 		}
 
-		bool restart_index_enabled() const
+		u8 index_array_location() const
 		{
-			return decode<NV4097_SET_RESTART_INDEX_ENABLE>().restart_index_enabled();
+			return decode<NV4097_SET_INDEX_ARRAY_DMA>().index_dma();
+		}
+
+		rsx::index_array_type index_type() const
+		{
+			return decode<NV4097_SET_INDEX_ARRAY_DMA>().type();
 		}
 
 		u32 restart_index() const
 		{
 			return decode<NV4097_SET_RESTART_INDEX>().restart_index();
+		}
+
+		bool restart_index_enabled_raw() const
+		{
+			return decode<NV4097_SET_RESTART_INDEX_ENABLE>().restart_index_enabled();
+		}
+
+		bool restart_index_enabled() const
+		{
+			if (!restart_index_enabled_raw())
+			{
+				return false;
+
+			}
+
+			if (index_type() == rsx::index_array_type::u16 &&
+				restart_index() > 0xffff)
+			{
+				return false;
+			}
+
+			return true;
 		}
 
 		u32 z_clear_value(bool is_depth_stencil) const
@@ -693,16 +724,6 @@ namespace rsx
 		f32 fog_params_1() const
 		{
 			return decode<NV4097_SET_FOG_PARAMS + 1>().fog_param_1();
-		}
-
-		u8 index_array_location() const
-		{
-			return decode<NV4097_SET_INDEX_ARRAY_DMA>().index_dma();
-		}
-
-		rsx::index_array_type index_type() const
-		{
-			return decode<NV4097_SET_INDEX_ARRAY_DMA>().type();
 		}
 
 		bool color_mask_b(int index) const
@@ -1085,9 +1106,23 @@ namespace rsx
 			return decode<NV4097_SET_POINT_SIZE>().point_size();
 		}
 
-		u8 alpha_ref() const
+		bool point_sprite_enabled() const
 		{
-			return decode<NV4097_SET_ALPHA_REF>().alpha_ref();
+			return decode<NV4097_SET_POINT_SPRITE_CONTROL>().enabled();
+		}
+
+		f32 alpha_ref() const
+		{
+			switch (surface_color())
+			{
+			case rsx::surface_color_format::x32:
+			case rsx::surface_color_format::w32z32y32x32:
+				return decode<NV4097_SET_ALPHA_REF>().alpha_ref32();
+			case rsx::surface_color_format::w16z16y16x16:
+				return decode<NV4097_SET_ALPHA_REF>().alpha_ref16();
+			default:
+				return decode<NV4097_SET_ALPHA_REF>().alpha_ref8();
+			}
 		}
 
 		surface_target surface_color_target() const
@@ -1310,9 +1345,10 @@ namespace rsx
 			return decode<NV4097_SET_VERTEX_DATA_BASE_INDEX>().vertex_data_base_index();
 		}
 
-		u32 shader_program_address() const
+		std::pair<u32, u32> shader_program_address() const
 		{
-			return decode<NV4097_SET_SHADER_PROGRAM>().shader_program_address();
+			const u32 shader_address = decode<NV4097_SET_SHADER_PROGRAM>().shader_program_address();
+			return { shader_address & ~3, (shader_address & 3) - 1 };
 		}
 
 		u32 transform_program_start() const
@@ -1589,20 +1625,14 @@ namespace rsx
 			return u16(registers[NV308A_SIZE_OUT] & 0xFFFF);
 		}
 
-		u32 transform_program_load()
+		u32 transform_program_load() const
 		{
 			return registers[NV4097_SET_TRANSFORM_PROGRAM_LOAD];
 		}
 
-		void commit_4_transform_program_instructions(u32 index)
+		void transform_program_load_set(u32 value)
 		{
-			u32& load = registers[NV4097_SET_TRANSFORM_PROGRAM_LOAD];
-
-			transform_program[load * 4] = registers[NV4097_SET_TRANSFORM_PROGRAM + index * 4];
-			transform_program[load * 4 + 1] = registers[NV4097_SET_TRANSFORM_PROGRAM + index * 4 + 1];
-			transform_program[load * 4 + 2] = registers[NV4097_SET_TRANSFORM_PROGRAM + index * 4 + 2];
-			transform_program[load * 4 + 3] = registers[NV4097_SET_TRANSFORM_PROGRAM + index * 4 + 3];
-			load++;
+			registers[NV4097_SET_TRANSFORM_PROGRAM_LOAD] = value;
 		}
 
 		u32 transform_constant_load()
@@ -1660,16 +1690,31 @@ namespace rsx
 			return decode<NV4097_SET_CONTROL0>().depth_float();
 		}
 
-		u32 texcoord_control_mask()
+		u16 texcoord_control_mask() const
 		{
 			// Only 10 texture coords exist [0-9]
-			u32 control_mask = 0;
+			u16 control_mask = 0;
 			for (u8 index = 0; index < 10; ++index)
 			{
 				control_mask |= ((registers[NV4097_SET_TEX_COORD_CONTROL + index] & 1) << index);
 			}
 
 			return control_mask;
+		}
+
+		u16 point_sprite_control_mask() const
+		{
+			return decode<NV4097_SET_POINT_SPRITE_CONTROL>().texcoord_mask();
+		}
+
+		const void* polygon_stipple_pattern() const
+		{
+			return registers.data() + NV4097_SET_POLYGON_STIPPLE_PATTERN;
+		}
+
+		bool polygon_stipple_enabled() const
+		{
+			return decode<NV4097_SET_POLYGON_STIPPLE>().enabled();
 		}
 	};
 

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "stdafx.h"
 #include "Emu/Memory/vm_ptr.h"
 #include <atomic>
 
@@ -64,7 +65,11 @@ enum
 
 	SCE_NP_TROPHY_INVALID_CONTEXT      = 0,
 	SCE_NP_TROPHY_INVALID_HANDLE       = 0,
-	SCE_NP_TROPHY_INVALID_TROPHY_ID    = -1,
+};
+
+enum : u32
+{
+	SCE_NP_TROPHY_INVALID_TROPHY_ID    = 0xffffffff,
 };
 
 enum SceNpTrophyGrade
@@ -74,6 +79,11 @@ enum SceNpTrophyGrade
 	SCE_NP_TROPHY_GRADE_GOLD           = 2,
 	SCE_NP_TROPHY_GRADE_SILVER         = 3,
 	SCE_NP_TROPHY_GRADE_BRONZE         = 4,
+};
+
+enum
+{
+	SCE_NP_TROPHY_OPTIONS_CREATE_CONTEXT_READ_ONLY = 1,
 };
 
 struct SceNpTrophyGameDetails
@@ -117,7 +127,7 @@ struct SceNpTrophyData
 
 struct SceNpTrophyFlagArray
 {
-	u32 flag_bits[SCE_NP_TROPHY_FLAG_SETSIZE >> SCE_NP_TROPHY_FLAG_BITS_SHIFT];
+	be_t<u32> flag_bits[SCE_NP_TROPHY_FLAG_SETSIZE >> SCE_NP_TROPHY_FLAG_BITS_SHIFT];
 };
 
 enum
@@ -148,11 +158,4 @@ public:
 	virtual ~TrophyNotificationBase();
 
 	virtual s32 ShowTrophyNotification(const SceNpTrophyDetails& trophy, const std::vector<uchar>& trophyIconBfr) = 0;
-};
-
-// fxm objects
-
-struct sce_np_trophy_manager
-{
-	std::atomic<bool> is_initialized = false;
 };

@@ -1,17 +1,16 @@
 ﻿#pragma once
 
+#include "stdafx.h"
+
 #include <QDialog>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QPushButton>
-#include <QGroupBox>
 #include <QComboBox>
 #include <QLineEdit>
-#include <QLabel>
-#include <QFileDialog>
 
 class skylander_dialog : public QDialog
 {
+	Q_OBJECT
+
 public:
 	skylander_dialog(QWidget* parent);
 	~skylander_dialog();
@@ -21,6 +20,8 @@ public:
 	void operator=(skylander_dialog const&) = delete;
 
 protected:
+	// Checks if the skylander is initialized
+	bool is_initialized();
 	// Update the edits from skylander loaded in memory
 	void update_edits();
 	// Parse edits and apply them to skylander in memory

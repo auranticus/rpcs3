@@ -94,7 +94,7 @@
       <verstretch>0</verstretch>
      </sizepolicy>
     </property>
-    <layout class="QHBoxLayout" name="horizontalLayout">
+    <layout class="QHBoxLayout" name="sizeSliderContainer_layout">
      <property name="spacing">
       <number>0</number>
      </property>
@@ -179,6 +179,13 @@
      <addaction name="separator"/>
      <addaction name="removeDiskCacheAct"/>
     </widget>
+    <widget class="QMenu" name="menuFirmware">
+     <property name="title">
+      <string>Firmware</string>
+     </property>
+     <addaction name="createFirmwareCacheAct"/>
+     <addaction name="removeFirmwareCacheAct"/>
+    </widget>
     <addaction name="bootElfAct"/>
     <addaction name="bootGameAct"/>
     <addaction name="bootRecentMenu"/>
@@ -189,6 +196,7 @@
     <addaction name="bootInstallPupAct"/>
     <addaction name="separator"/>
     <addaction name="menuBatch"/>
+    <addaction name="menuFirmware"/>
     <addaction name="separator"/>
     <addaction name="exitAct"/>
    </widget>
@@ -225,9 +233,12 @@
     <addaction name="separator"/>
     <addaction name="actionManage_Users"/>
     <addaction name="confSavedataManagerAct"/>
-    <addaction name="actionManage_RAP_Licences"/>
+    <addaction name="actionManage_RAP_Licenses"/>
     <addaction name="actionManage_Trophy_Data"/>
     <addaction name="actionManage_Skylanders_Portal"/>
+    <addaction name="actionManage_Cheats"/>
+    <addaction name="actionManage_Game_Patches"/>
+    <addaction name="actionManage_Screenshots"/>
    </widget>
    <widget class="QMenu" name="menuUtilities">
     <property name="title">
@@ -240,7 +251,10 @@
     <addaction name="toolsStringSearchAct"/>
     <addaction name="separator"/>
     <addaction name="toolsDecryptSprxLibsAct"/>
+    <addaction name="separator"/>
     <addaction name="actionopen_rsx_capture"/>
+    <addaction name="separator"/>
+    <addaction name="actionCreate_RSX_Capture"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -298,7 +312,15 @@
     <property name="title">
      <string>Help</string>
     </property>
-    <addaction name="actionCheck_for_Updates"/>
+    <widget class="QMenu" name="languageMenu">
+     <property name="title">
+      <string>Language</string>
+     </property>
+     <addaction name="languageAct0"/>
+    </widget>
+    <addaction name="updateAct"/>
+    <addaction name="separator"/>
+    <addaction name="languageMenu"/>
     <addaction name="separator"/>
     <addaction name="aboutAct"/>
     <addaction name="aboutQtAct"/>
@@ -373,7 +395,7 @@
     <string>Install .pkg</string>
    </property>
    <property name="toolTip">
-    <string>Install application from pkg file</string>
+    <string>Install application from a .pkg file</string>
    </property>
   </action>
   <action name="bootInstallPupAct">
@@ -396,7 +418,7 @@
     <string>Pause</string>
    </property>
    <property name="toolTip">
-    <string>Start Emulation</string>
+    <string>Start emulation</string>
    </property>
   </action>
   <action name="sysStopAct">
@@ -411,7 +433,7 @@
     <string>Stop</string>
    </property>
    <property name="toolTip">
-    <string>Stop Emulation</string>
+    <string>Stop emulation</string>
    </property>
   </action>
   <action name="sysSendOpenMenuAct">
@@ -443,7 +465,7 @@
     <string>GPU</string>
    </property>
    <property name="toolTip">
-    <string>Configure Graphics</string>
+    <string>Configure graphics</string>
    </property>
   </action>
   <action name="confPadsAct">
@@ -454,7 +476,7 @@
     <string>Pads</string>
    </property>
    <property name="toolTip">
-    <string>Configure Controls</string>
+    <string>Configure controls</string>
    </property>
   </action>
   <action name="confAudioAct">
@@ -462,7 +484,7 @@
     <string>Audio</string>
    </property>
    <property name="toolTip">
-    <string>Configure Audio</string>
+    <string>Configure audio</string>
    </property>
   </action>
   <action name="confIOAct">
@@ -478,7 +500,7 @@
     <string>System</string>
    </property>
    <property name="toolTip">
-    <string>Configure System</string>
+    <string>Configure system</string>
    </property>
   </action>
   <action name="confAutopauseManagerAct">
@@ -500,7 +522,7 @@
     <string>Exit RPCS3</string>
    </property>
    <property name="statusTip">
-    <string>Exit the application</string>
+    <string>Exit the application.</string>
    </property>
   </action>
   <action name="confSavedataManagerAct">
@@ -511,7 +533,7 @@
     <string>Save Data</string>
    </property>
    <property name="toolTip">
-    <string>Manage Save Data</string>
+    <string>Manage save data</string>
    </property>
   </action>
   <action name="actionManage_Trophy_Data">
@@ -522,7 +544,7 @@
     <string>Trophies</string>
    </property>
    <property name="toolTip">
-    <string>Manage Trophies</string>
+    <string>Manage trophies</string>
    </property>
   </action>
   <action name="actionManage_Users">
@@ -530,7 +552,7 @@
     <string>User Accounts</string>
    </property>
    <property name="toolTip">
-    <string>Manage User Accounts</string>
+    <string>Manage user accounts</string>
    </property>
   </action>
   <action name="toolsCgDisasmAct">
@@ -630,7 +652,7 @@
     <string>Game List Refresh</string>
    </property>
   </action>
-  <action name="actionManage_RAP_Licences">
+  <action name="actionManage_RAP_Licenses">
    <property name="enabled">
     <bool>false</bool>
    </property>
@@ -638,10 +660,7 @@
     <string>RAP Files</string>
    </property>
   </action>
-  <action name="actionCheck_for_Updates">
-   <property name="enabled">
-    <bool>false</bool>
-   </property>
+  <action name="updateAct">
    <property name="text">
     <string>Check for Updates</string>
    </property>
@@ -934,7 +953,7 @@
     <string>Open</string>
    </property>
    <property name="toolTip">
-    <string>Boot game</string>
+    <string>Boot a game</string>
    </property>
   </action>
   <action name="showCatOtherAct">
@@ -1012,6 +1031,47 @@
   <action name="actionManage_Skylanders_Portal">
    <property name="text">
     <string>Skylanders Portal</string>
+   </property>
+  </action>
+  <action name="actionManage_Cheats">
+   <property name="text">
+    <string>Cheats</string>
+   </property>
+  </action>
+  <action name="languageAct0">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>English</string>
+   </property>
+  </action>
+  <action name="actionManage_Screenshots">
+   <property name="text">
+    <string>Screenshots</string>
+   </property>
+  </action>
+  <action name="removeFirmwareCacheAct">
+   <property name="text">
+    <string>Remove Firmware Cache</string>
+   </property>
+  </action>
+  <action name="createFirmwareCacheAct">
+   <property name="text">
+    <string>Create Firmware Cache</string>
+   </property>
+  </action>
+  <action name="actionCreate_RSX_Capture">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Create RSX Capture</string>
+   </property>
+  </action>
+  <action name="actionManage_Game_Patches">
+   <property name="text">
+    <string>Game Patches</string>
    </property>
   </action>
  </widget>

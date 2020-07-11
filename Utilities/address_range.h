@@ -60,21 +60,26 @@ namespace utils
 			return (start1 >= start2 && end1 <= end2);
 		}
 
-		address_range(u32 _start, u32 _end) : start(_start), end(_end) {}
+		constexpr address_range(u32 _start, u32 _end) : start(_start), end(_end) {}
 
 	public:
 		// Constructors
-		address_range() = default;
-		address_range(const address_range &other) : start(other.start), end(other.end) {}
+		constexpr address_range() = default;
+		constexpr address_range(const address_range &other) : start(other.start), end(other.end) {}
 
-		static inline address_range start_length(u32 _start, u32 _length)
+		static constexpr address_range start_length(u32 _start, u32 _length)
 		{
-			return address_range(_start, _start + (_length - 1));
+			if (!_length)
+			{
+				return {};
+			}
+
+			return {_start, _start + (_length - 1)};
 		}
 
-		static inline address_range start_end(u32 _start, u32 _end)
+		static constexpr address_range start_end(u32 _start, u32 _end)
 		{
-			return address_range(_start, _end);
+			return {_start, _end};
 		}
 
 		// Length
@@ -140,12 +145,12 @@ namespace utils
 			// other after this
 			if (other.start > end)
 			{
-				return (s32)(other.start - end - 1);
+				return static_cast<s32>(other.start - end - 1);
 			}
 
 			// this after other
 			AUDIT(start > other.end);
-			return -((s32)(start - other.end - 1));
+			return -static_cast<s32>(start - other.end - 1);
 		}
 
 		u32 distance(const address_range &other) const
@@ -176,9 +181,7 @@ namespace utils
 
 		void set_min_max(const address_range &other)
 		{
-			const address_range _range = get_min_max(other);
-			start = _range.start;
-			end = _range.end;
+			*this = get_min_max(other);
 		}
 
 		bool is_page_range() const
@@ -577,7 +580,8 @@ namespace utils
 } // namespace utils
 
 
-namespace std {
+namespace std
+{
 	static_assert(sizeof(size_t) >= 2 * sizeof(u32), "size_t must be at least twice the size of u32");
 
 	template <>

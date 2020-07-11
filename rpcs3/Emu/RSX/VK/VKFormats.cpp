@@ -45,25 +45,25 @@ namespace vk
 		default:
 			break;
 		}
-		fmt::throw_exception("Invalid format (0x%x)" HERE, (u32)format);
+		fmt::throw_exception("Invalid format (0x%x)" HERE, static_cast<u32>(format));
 	}
 
-	std::tuple<VkFilter, VkSamplerMipmapMode> get_min_filter_and_mip(rsx::texture_minify_filter min_filter)
+	minification_filter get_min_filter(rsx::texture_minify_filter min_filter)
 	{
 		switch (min_filter)
 		{
-		case rsx::texture_minify_filter::nearest: return std::make_tuple(VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST);
-		case rsx::texture_minify_filter::linear: return std::make_tuple(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST);
-		case rsx::texture_minify_filter::nearest_nearest: return std::make_tuple(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST);
-		case rsx::texture_minify_filter::linear_nearest: return std::make_tuple(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST);
-		case rsx::texture_minify_filter::nearest_linear: return std::make_tuple(VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_LINEAR);
-		case rsx::texture_minify_filter::linear_linear: return std::make_tuple(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR);
-		case rsx::texture_minify_filter::convolution_min: return std::make_tuple(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR);
+		case rsx::texture_minify_filter::nearest: return { VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, false };
+		case rsx::texture_minify_filter::linear: return { VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, false };
+		case rsx::texture_minify_filter::nearest_nearest: return { VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST, true };
+		case rsx::texture_minify_filter::linear_nearest: return { VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, true };
+		case rsx::texture_minify_filter::nearest_linear: return { VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_LINEAR, true };
+		case rsx::texture_minify_filter::linear_linear: return { VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, true };
+		case rsx::texture_minify_filter::convolution_min: return { VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST, false };
 		default:
 			ASSUME(0);
 			break;
 		}
-		fmt::throw_exception("Invalid max filter" HERE);
+		fmt::throw_exception("Invalid min filter" HERE);
 	}
 
 	VkFilter get_mag_filter(rsx::texture_magnify_filter mag_filter)
@@ -77,7 +77,7 @@ namespace vk
 			ASSUME(0);
 			break;
 		}
-		fmt::throw_exception("Invalid mag filter (0x%x)" HERE, (u32)mag_filter);
+		fmt::throw_exception("Invalid mag filter (0x%x)" HERE, static_cast<u32>(mag_filter));
 	}
 
 	VkBorderColor get_border_color(u32 color)
@@ -151,7 +151,7 @@ namespace vk
 			break;
 		}
 
-		fmt::throw_exception("Texture anisotropy error: bad max aniso (%d)" HERE, (u32)gcm_aniso);
+		fmt::throw_exception("Texture anisotropy error: bad max aniso (%d)" HERE, static_cast<u32>(gcm_aniso));
 	}
 
 
@@ -187,8 +187,7 @@ namespace vk
 			mapping = { VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R }; break;
 
 		case CELL_GCM_TEXTURE_X16:
-			//Blue component is also R (Mass Effect 3)
-			mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R }; break;
+			mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE }; break;
 
 		case CELL_GCM_TEXTURE_X32_FLOAT:
 			mapping = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R }; break;
@@ -325,7 +324,7 @@ namespace vk
 			break;
 		}
 
-		fmt::throw_exception("Unexpected vkFormat 0x%X", (u32)format);
+		fmt::throw_exception("Unexpected vkFormat 0x%X", static_cast<u32>(format));
 	}
 
 	std::pair<u8, u8> get_format_element_size(VkFormat format)
@@ -386,7 +385,7 @@ namespace vk
 			break;
 		}
 
-		fmt::throw_exception("Unexpected vkFormat 0x%X", (u32)format);
+		fmt::throw_exception("Unexpected vkFormat 0x%X", static_cast<u32>(format));
 	}
 
 	std::pair<bool, u32> get_format_convert_flags(VkFormat format)
@@ -395,8 +394,6 @@ namespace vk
 		{
 			//8-bit
 		case VK_FORMAT_R8_UNORM:
-		case VK_FORMAT_R8G8_UNORM:
-		case VK_FORMAT_R8G8_SNORM:
 		case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
 		case VK_FORMAT_R8G8B8A8_UNORM:
 			return{ false, 1 };
@@ -407,6 +404,8 @@ namespace vk
 		case VK_FORMAT_R16_UINT:
 		case VK_FORMAT_R16_SFLOAT:
 		case VK_FORMAT_R16_UNORM:
+		case VK_FORMAT_R8G8_UNORM:
+		case VK_FORMAT_R8G8_SNORM:
 		case VK_FORMAT_R16G16_UNORM:
 		case VK_FORMAT_R16G16_SFLOAT:
 		case VK_FORMAT_R16G16B16A16_SFLOAT:
@@ -438,12 +437,12 @@ namespace vk
 			break;
 		}
 
-		fmt::throw_exception("Unknown vkFormat 0x%x" HERE, (u32)format);
+		fmt::throw_exception("Unknown vkFormat 0x%x" HERE, static_cast<u32>(format));
 	}
 
 	bool formats_are_bitcast_compatible(VkFormat format1, VkFormat format2)
 	{
-		if (LIKELY(format1 == format2))
+		if (format1 == format2) [[likely]]
 		{
 			return true;
 		}

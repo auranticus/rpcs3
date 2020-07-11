@@ -1,37 +1,44 @@
-#pragma once
+﻿#ifndef BETYPE_H_GUARD
+#define BETYPE_H_GUARD
 
 #include "types.h"
 #include "util/endian.hpp"
 #include <cstring>
+#include <cmath>
+
+#if __has_include(<bit>)
+#include <bit>
+#else
+#include <type_traits>
+#endif
 
 // 128-bit vector type and also se_storage<> storage type
 union alignas(16) v128
 {
-	char _bytes[16];
+	uchar _bytes[16];
+	char _chars[16];
 
 	template <typename T, std::size_t N, std::size_t M>
 	struct masked_array_t // array type accessed as (index ^ M)
 	{
-		T m_data[N];
+		char m_data[16];
 
 	public:
 		T& operator[](std::size_t index)
 		{
-			return m_data[index ^ M];
+			return reinterpret_cast<T*>(m_data)[index ^ M];
 		}
 
 		const T& operator[](std::size_t index) const
 		{
-			return m_data[index ^ M];
+			return reinterpret_cast<const T*>(m_data)[index ^ M];
 		}
 	};
 
-#if IS_LE_MACHINE == 1
 	template <typename T, std::size_t N = 16 / sizeof(T)>
-	using normal_array_t = masked_array_t<T, N, 0>;
+	using normal_array_t = masked_array_t<T, N, std::endian::little == std::endian::native ? 0 : N - 1>;
 	template <typename T, std::size_t N = 16 / sizeof(T)>
-	using reversed_array_t = masked_array_t<T, N, N - 1>;
-#endif
+	using reversed_array_t = masked_array_t<T, N, std::endian::little == std::endian::native ? N - 1 : 0>;
 
 	normal_array_t<u64> _u64;
 	normal_array_t<s64> _s64;
@@ -64,7 +71,7 @@ union alignas(16) v128
 
 	struct bit_array_128
 	{
-		u64 m_data[2];
+		char m_data[16];
 
 	public:
 		class bit_element
@@ -114,17 +121,31 @@ union alignas(16) v128
 		// Index 0 returns the MSB and index 127 returns the LSB
 		bit_element operator[](u32 index)
 		{
-#if IS_LE_MACHINE == 1
-			return bit_element(m_data[1 - (index >> 6)], 0x8000000000000000ull >> (index & 0x3F));
-#endif
+			const auto data_ptr = reinterpret_cast<u64*>(m_data);
+
+			if constexpr (std::endian::little == std::endian::native)
+			{
+				return bit_element(data_ptr[1 - (index >> 6)], 0x8000000000000000ull >> (index & 0x3F));
+			}
+			else
+			{
+				return bit_element(data_ptr[index >> 6], 0x8000000000000000ull >> (index & 0x3F));
+			}
 		}
 
 		// Index 0 returns the MSB and index 127 returns the LSB
 		bool operator[](u32 index) const
 		{
-#if IS_LE_MACHINE == 1
-			return (m_data[1 - (index >> 6)] & (0x8000000000000000ull >> (index & 0x3F))) != 0;
-#endif
+			const auto data_ptr = reinterpret_cast<const u64*>(m_data);
+
+			if constexpr (std::endian::little == std::endian::native)
+			{
+				return (data_ptr[1 - (index >> 6)] & (0x8000000000000000ull >> (index & 0x3F))) != 0;
+			}
+			else
+			{
+				return (data_ptr[index >> 6] & (0x8000000000000000ull >> (index & 0x3F))) != 0;
+			}
 		}
 	} _bit;
 
@@ -205,6 +226,20 @@ union alignas(16) v128
 		return ret;
 	}
 
+	// Unaligned load with optional index offset
+	static v128 loadu(const void* ptr, std::size_t index = 0)
+	{
+		v128 ret;
+		std::memcpy(&ret, static_cast<const u8*>(ptr) + index * sizeof(v128), sizeof(v128));
+		return ret;
+	}
+
+	// Unaligned store with optional index offset
+	static void storeu(v128 value, void* ptr, std::size_t index = 0)
+	{
+		std::memcpy(static_cast<u8*>(ptr) + index * sizeof(v128), &value, sizeof(v128));
+	}
+
 	static inline v128 add8(const v128& left, const v128& right)
 	{
 		return fromV(_mm_add_epi8(left.vi, right.vi));
@@ -280,14 +315,54 @@ union alignas(16) v128
 		return fromV(_mm_cmpeq_epi32(left.vi, right.vi));
 	}
 
+	static inline v128 eq32f(const v128& left, const v128& right)
+	{
+		return fromF(_mm_cmpeq_ps(left.vf, right.vf));
+	}
+
+	static inline v128 eq64f(const v128& left, const v128& right)
+	{
+		return fromD(_mm_cmpeq_pd(left.vd, right.vd));
+	}
+
+	static inline bool use_fma = false;
+
+	static inline v128 fma32f(v128 a, const v128& b, const v128& c)
+	{
+#ifndef __FMA__
+		if (use_fma) [[likely]]
+		{
+#ifdef _MSC_VER
+			a.vf = _mm_fmadd_ps(a.vf, b.vf, c.vf);
+			return a;
+#else
+			__asm__("vfmadd213ps %[c], %[b], %[a]"
+				: [a] "+x" (a.vf)
+				: [b] "x" (b.vf)
+				, [c] "x" (c.vf));
+			return a;
+#endif
+		}
+
+		for (int i = 0; i < 4; i++)
+		{
+			a._f[i] = std::fmaf(a._f[i], b._f[i], c._f[i]);
+		}
+		return a;
+#else
+		a.vf = _mm_fmadd_ps(a.vf, b.vf, c.vf);
+		return a;
+#endif
+	}
+
 	bool operator==(const v128& right) const
 	{
-		return _u64[0] == right._u64[0] && _u64[1] == right._u64[1];
+		return _mm_movemask_epi8(v128::eq32(*this, right).vi) == 0xffff;
 	}
 
 	bool operator!=(const v128& right) const
 	{
-		return _u64[0] != right._u64[0] || _u64[1] != right._u64[1];
+		return !operator==(right);
 	}
 
 	// result = (~left) & (right)
@@ -298,8 +373,7 @@ union alignas(16) v128
 
 	void clear()
 	{
-		_u64[0] = 0;
-		_u64[1] = 0;
+		*this = {};
 	}
 };
 
@@ -330,7 +404,7 @@ inline v128 operator^(const v128& left, const v128& right)
 
 inline v128 operator~(const v128& other)
 {
-	return v128::from64(~other._u64[0], ~other._u64[1]);
+	return other ^ v128::from32p(UINT32_MAX); // XOR with ones
 }
 
 using stx::se_t;
@@ -340,12 +414,10 @@ using stx::se_storage;
 template <typename T, std::size_t Align = alignof(T)>
 using nse_t = se_t<T, false, Align>;
 
-#if IS_LE_MACHINE == 1
 template <typename T, std::size_t Align = alignof(T)>
-using be_t = se_t<T, true, Align>;
+using be_t = se_t<T, std::endian::little == std::endian::native, Align>;
 template <typename T, std::size_t Align = alignof(T)>
-using le_t = se_t<T, false, Align>;
-#endif
+using le_t = se_t<T, std::endian::big == std::endian::native, Align>;
 
 // Type converter: converts native endianness arithmetic/enum types to appropriate se_t<> type
 template <typename T, bool Se, typename = void>
@@ -414,20 +486,16 @@ struct to_se<T[N], Se>
 };
 
 // BE/LE aliases for to_se<>
-#if IS_LE_MACHINE == 1
 template <typename T>
-using to_be_t = typename to_se<T, true>::type;
+using to_be_t = typename to_se<T, std::endian::little == std::endian::native>::type;
 template <typename T>
-using to_le_t = typename to_se<T, false>::type;
-#endif
+using to_le_t = typename to_se<T, std::endian::big == std::endian::native>::type;
 
 // BE/LE aliases for atomic_t
-#if IS_LE_MACHINE == 1
 template <typename T>
 using atomic_be_t = atomic_t<be_t<T>>;
 template <typename T>
 using atomic_le_t = atomic_t<le_t<T>>;
-#endif
 
 template <typename T, bool Se, std::size_t Align>
 struct fmt_unveil<se_t<T, Se, Align>, void>
@@ -439,3 +507,5 @@ struct fmt_unveil<se_t<T, Se, Align>, void>
 		return fmt_unveil<T>::get(arg);
 	}
 };
+
+#endif // BETYPE_H_GUARD

@@ -1,6 +1,7 @@
-#pragma once
+﻿#pragma once
 #include "../Common/VertexProgramDecompiler.h"
 #include "Emu/RSX/RSXVertexProgram.h"
+#include "GLHelpers.h"
 
 enum
 {
@@ -11,8 +12,15 @@ enum
 	GL_VP_SINT_MASK = (GL_VP_ATTRIB_S16_INT|GL_VP_ATTRIB_S32_INT)
 };
 
+namespace gl
+{
+	class shader_interpreter;
+};
+
 struct GLVertexDecompilerThread : public VertexProgramDecompiler
 {
+	friend class gl::shader_interpreter;
+
 	std::string &m_shader;
 protected:
 	std::string getFloatTypeName(size_t elementCount) override;
@@ -41,15 +49,14 @@ public:
 };
 
 class GLVertexProgram
-{ 
+{
 public:
 	GLVertexProgram();
 	~GLVertexProgram();
 
 	ParamArray parr;
-	u32 id = 0;
-	std::string shader;
-	bool interleaved;
+	u32 id;
+	gl::glsl::shader shader;
 
 	void Decompile(const RSXVertexProgram& prog);
 	void Compile();

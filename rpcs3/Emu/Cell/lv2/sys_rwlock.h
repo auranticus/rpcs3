@@ -14,7 +14,7 @@ struct sys_rwlock_attribute_t
 
 	union
 	{
-		u64 name_u64;
+		nse_t<u64, 1> name_u64;
 		char name[sizeof(u64)];
 	};
 };
@@ -23,7 +23,7 @@ struct lv2_rwlock final : lv2_obj
 {
 	static const u32 id_base = 0x88000000;
 
-	const u32 protocol;
+	const lv2_protocol protocol;
 	const u32 shared;
 	const u64 key;
 	const u64 name;
@@ -35,11 +35,11 @@ struct lv2_rwlock final : lv2_obj
 	std::deque<cpu_thread*> wq;
 
 	lv2_rwlock(u32 protocol, u32 shared, u64 key, s32 flags, u64 name)
-		: protocol(protocol)
+		: protocol{protocol}
 		, shared(shared)
 		, key(key)
-		, flags(flags)
 		, name(name)
+		, flags(flags)
 	{
 	}
 };

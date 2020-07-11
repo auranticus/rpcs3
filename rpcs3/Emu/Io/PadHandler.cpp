@@ -1,12 +1,12 @@
 ﻿#include "stdafx.h"
 #include "PadHandler.h"
-#include "pad_thread.h"
-
-#ifdef _WIN32
-#include <Windows.h>
-#endif
+#include "Emu/System.h"
+#include "Input/pad_thread.h"
+#include "Input/product_info.h"
 
 cfg_input g_cfg_input;
+
+LOG_CHANNEL(input_log, "Input");
 
 PadHandlerBase::PadHandlerBase(pad_handler type) : m_type(type)
 {
@@ -15,8 +15,8 @@ PadHandlerBase::PadHandlerBase(pad_handler type) : m_type(type)
 // Search an unordered map for a string value and return found keycode
 int PadHandlerBase::FindKeyCode(const std::unordered_map<u32, std::string>& map, const cfg::string& name, bool fallback)
 {
-	std::string def = name.def;
-	std::string nam = name.to_string();
+	const std::string def = name.def;
+	const std::string nam = name.to_string();
 	int def_code = -1;
 
 	for (auto it = map.begin(); it != map.end(); ++it)
@@ -30,7 +30,7 @@ int PadHandlerBase::FindKeyCode(const std::unordered_map<u32, std::string>& map,
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "int FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
+		input_log.error("int FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
 		if (def_code < 0)
 			def_code = 0;
 	}
@@ -40,8 +40,8 @@ int PadHandlerBase::FindKeyCode(const std::unordered_map<u32, std::string>& map,
 
 long PadHandlerBase::FindKeyCode(const std::unordered_map<u64, std::string>& map, const cfg::string& name, bool fallback)
 {
-	std::string def = name.def;
-	std::string nam = name.to_string();
+	const std::string def = name.def;
+	const std::string nam = name.to_string();
 	long def_code = -1;
 
 	for (auto it = map.begin(); it != map.end(); ++it)
@@ -55,7 +55,7 @@ long PadHandlerBase::FindKeyCode(const std::unordered_map<u64, std::string>& map
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
+		input_log.error("long FindKeyCode for [name = %s] returned with [def_code = %d] for [def = %s]", nam, def_code, def);
 		if (def_code < 0)
 			def_code = 0;
 	}
@@ -74,7 +74,7 @@ int PadHandlerBase::FindKeyCodeByString(const std::unordered_map<u32, std::strin
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCodeByString for [name = %s] returned with 0", name);
+		input_log.error("long FindKeyCodeByString for [name = %s] returned with 0", name);
 		return 0;
 	}
 
@@ -92,7 +92,7 @@ long PadHandlerBase::FindKeyCodeByString(const std::unordered_map<u64, std::stri
 
 	if (fallback)
 	{
-		LOG_ERROR(HLE, "long FindKeyCodeByString for [name = %s] returned with 0", name);
+		input_log.error("long FindKeyCodeByString for [name = %s] returned with 0", name);
 		return 0;
 	}
 
@@ -100,18 +100,18 @@ long PadHandlerBase::FindKeyCodeByString(const std::unordered_map<u64, std::stri
 }
 
 // Get new scaled value between 0 and 255 based on its minimum and maximum
-float PadHandlerBase::ScaleStickInput(s32 raw_value, int minimum, int maximum)
+float PadHandlerBase::ScaledInput(s32 raw_value, int minimum, int maximum)
 {
 	// value based on max range converted to [0, 1]
-	float val = float(std::clamp(raw_value, minimum, maximum) - minimum) / float(abs(maximum) + abs(minimum));
+	const float val = static_cast<float>(std::clamp(raw_value, minimum, maximum) - minimum) / (abs(maximum) + abs(minimum));
 	return 255.0f * val;
 }
 
 // Get new scaled value between -255 and 255 based on its minimum and maximum
-float PadHandlerBase::ScaleStickInput2(s32 raw_value, int minimum, int maximum)
+float PadHandlerBase::ScaledInput2(s32 raw_value, int minimum, int maximum)
 {
 	// value based on max range converted to [0, 1]
-	float val = float(std::clamp(raw_value, minimum, maximum) - minimum) / float(abs(maximum) + abs(minimum));
+	const float val = static_cast<float>(std::clamp(raw_value, minimum, maximum) - minimum) / (abs(maximum) + abs(minimum));
 	return (510.0f * val) - 255.0f;
 }
 
@@ -124,24 +124,25 @@ u16 PadHandlerBase::NormalizeTriggerInput(u16 value, int threshold)
 	}
 	else if (threshold <= trigger_min)
 	{
-		return value;
+		return static_cast<u16>(ScaledInput(value, trigger_min, trigger_max));
 	}
 	else
 	{
-		return (u16)(float(trigger_max) * float(value - threshold) / float(trigger_max - threshold));
+		const s32 val = static_cast<s32>(static_cast<float>(trigger_max) * (value - threshold) / (trigger_max - threshold));
+		return static_cast<u16>(ScaledInput(val, trigger_min, trigger_max));
 	}
 }
 
 // normalizes a directed input, meaning it will correspond to a single "button" and not an axis with two directions
 // the input values must lie in 0+
-u16 PadHandlerBase::NormalizeDirectedInput(s32 raw_value, s32 threshold, s32 maximum)
+u16 PadHandlerBase::NormalizeDirectedInput(s32 raw_value, s32 threshold, s32 maximum) const
 {
 	if (threshold >= maximum || maximum <= 0)
 	{
 		return static_cast<u16>(0);
 	}
 
-	float val = float(std::clamp(raw_value, 0, maximum)) / float(maximum); // value based on max range converted to [0, 1]
+	const float val = static_cast<float>(std::clamp(raw_value, 0, maximum)) / maximum; // value based on max range converted to [0, 1]
 
 	if (threshold <= 0)
 	{
@@ -149,18 +150,18 @@ u16 PadHandlerBase::NormalizeDirectedInput(s32 raw_value, s32 threshold, s32 max
 	}
 	else
 	{
-		float thresh = float(threshold) / float(maximum); // threshold converted to [0, 1]
+		const float thresh = static_cast<float>(threshold) / maximum; // threshold converted to [0, 1]
 		return static_cast<u16>(255.0f * std::min(1.0f, (val - thresh) / (1.0f - thresh)));
 	}
 }
 
-u16 PadHandlerBase::NormalizeStickInput(u16 raw_value, int threshold, int multiplier, bool ignore_threshold)
+u16 PadHandlerBase::NormalizeStickInput(u16 raw_value, int threshold, int multiplier, bool ignore_threshold) const
 {
 	const s32 scaled_value = (multiplier * raw_value) / 100;
 
 	if (ignore_threshold)
 	{
-		return static_cast<u16>(ScaleStickInput(scaled_value, 0, thumb_max));
+		return static_cast<u16>(ScaledInput(scaled_value, 0, thumb_max));
 	}
 	else
 	{
@@ -173,29 +174,31 @@ u16 PadHandlerBase::NormalizeStickInput(u16 raw_value, int threshold, int multip
 // return is new x and y values in 0-255 range
 std::tuple<u16, u16> PadHandlerBase::NormalizeStickDeadzone(s32 inX, s32 inY, u32 deadzone)
 {
-	const float dzRange = deadzone / float((std::abs(thumb_max) + std::abs(thumb_min)));
+	const float dz_range = deadzone / static_cast<float>(std::abs(thumb_max)); // NOTE: thumb_max should be positive anyway
 
 	float X = inX / 255.0f;
 	float Y = inY / 255.0f;
 
-	if (dzRange > 0.f)
+	if (dz_range > 0.f)
 	{
-		const float mag = std::min(sqrtf(X*X + Y*Y), 1.f);
+		const float mag = std::min(sqrtf(X * X + Y * Y), 1.f);
 
 		if (mag <= 0)
 		{
 			return std::tuple<u16, u16>(ConvertAxis(X), ConvertAxis(Y));
 		}
 
-		if (mag > dzRange) {
-			float pos = lerp(0.13f, 1.f, (mag - dzRange) / (1 - dzRange));
-			float scale = pos / mag;
+		if (mag > dz_range)
+		{
+			const float pos = std::lerp(0.13f, 1.f, (mag - dz_range) / (1 - dz_range));
+			const float scale = pos / mag;
 			X = X * scale;
 			Y = Y * scale;
 		}
-		else {
-			float pos = lerp(0.f, 0.13f, mag / dzRange);
-			float scale = pos / mag;
+		else
+		{
+			const float pos = std::lerp(0.f, 0.13f, mag / dz_range);
+			const float scale = pos / mag;
 			X = X * scale;
 			Y = Y * scale;
 		}
@@ -228,8 +231,8 @@ u16 PadHandlerBase::ConvertAxis(float value)
 std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, int squircle_factor)
 {
 	// convert inX and Y to a (-1, 1) vector;
-	const f32 x = ((f32)inX - 127.5f) / 127.5f;
-	const f32 y = ((f32)inY - 127.5f) / 127.5f;
+	const f32 x = (inX - 127.5f) / 127.5f;
+	const f32 y = (inY - 127.5f) / 127.5f;
 
 	// compute angle and len of given point to be used for squircle radius
 	const f32 angle = std::atan2(y, x);
@@ -237,7 +240,7 @@ std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, in
 
 	// now find len/point on the given squircle from our current angle and radius in polar coords
 	// https://thatsmaths.com/2016/07/14/squircles/
-	const f32 newLen = (1 + std::pow(std::sin(2 * angle), 2.f) / (float(squircle_factor) / 1000.f)) * r;
+	const f32 newLen = (1 + std::pow(std::sin(2 * angle), 2.f) / (squircle_factor / 1000.f)) * r;
 
 	// we now have len and angle, convert to cartesian
 	const int newX = Clamp0To255(((newLen * std::cos(angle)) + 1) * 127.5f);
@@ -245,34 +248,39 @@ std::tuple<u16, u16> PadHandlerBase::ConvertToSquirclePoint(u16 inX, u16 inY, in
 	return std::tuple<u16, u16>(newX, newY);
 }
 
-std::string PadHandlerBase::name_string()
+std::string PadHandlerBase::name_string() const
 {
 	return m_name_string;
 }
 
-size_t PadHandlerBase::max_devices()
+size_t PadHandlerBase::max_devices() const
 {
 	return m_max_devices;
 }
 
-bool PadHandlerBase::has_config()
+bool PadHandlerBase::has_config() const
 {
 	return b_has_config;
 }
 
-bool PadHandlerBase::has_rumble()
+bool PadHandlerBase::has_rumble() const
 {
 	return b_has_rumble;
 }
 
-bool PadHandlerBase::has_deadzones()
+bool PadHandlerBase::has_deadzones() const
 {
 	return b_has_deadzones;
 }
 
-bool PadHandlerBase::has_led()
+bool PadHandlerBase::has_led() const
 {
 	return b_has_led;
+}
+
+bool PadHandlerBase::has_battery() const
+{
+	return b_has_battery;
 }
 
 std::string PadHandlerBase::get_config_dir(pad_handler type, const std::string& title_id)
@@ -301,7 +309,7 @@ void PadHandlerBase::init_configs()
 {
 	int index = 0;
 
-	for (int i = 0; i < MAX_GAMEPADS; i++)
+	for (u32 i = 0; i < MAX_GAMEPADS; i++)
 	{
 		if (g_cfg_input.player[i]->handler == m_type)
 		{
@@ -311,7 +319,7 @@ void PadHandlerBase::init_configs()
 	}
 }
 
-void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std::function<void(u16, std::string, std::string, std::array<int, 6>)>& callback, const std::function<void(std::string)>& fail_callback, bool get_blacklist, const std::vector<std::string>& /*buttons*/)
+void PadHandlerBase::get_next_button_press(const std::string& pad_id, const pad_callback& callback, const pad_fail_callback& fail_callback, bool get_blacklist, const std::vector<std::string>& /*buttons*/)
 {
 	if (get_blacklist)
 		blacklist.clear();
@@ -320,7 +328,11 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 
 	const auto status = update_connection(device);
 	if (status == connection::disconnected)
-		return fail_callback(pad_id);
+	{
+		if (fail_callback)
+			fail_callback(pad_id);
+		return;
+	}
 	else if (status == connection::no_data)
 		return;
 
@@ -333,8 +345,8 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 	std::pair<u16, std::string> pressed_button = { 0, "" };
 	for (const auto& button : button_list)
 	{
-		u32 keycode = button.first;
-		u16 value = data[keycode];
+		const u32 keycode = button.first;
+		const u16 value = data[keycode];
 
 		if (!get_blacklist && std::find(blacklist.begin(), blacklist.end(), keycode) != blacklist.end())
 			continue;
@@ -348,7 +360,7 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 			if (get_blacklist)
 			{
 				blacklist.emplace_back(keycode);
-				LOG_ERROR(HLE, "%s Calibration: Added key [ %d = %s ] to blacklist. Value = %d", m_type, keycode, button.second, value);
+				input_log.error("%s Calibration: Added key [ %d = %s ] to blacklist. Value = %d", m_type, keycode, button.second, value);
 			}
 			else if (value > pressed_button.first)
 				pressed_button = { value, button.second };
@@ -358,16 +370,20 @@ void PadHandlerBase::get_next_button_press(const std::string& pad_id, const std:
 	if (get_blacklist)
 	{
 		if (blacklist.empty())
-			LOG_SUCCESS(HLE, "%s Calibration: Blacklist is clear. No input spam detected", m_type);
+			input_log.success("%s Calibration: Blacklist is clear. No input spam detected", m_type);
 		return;
 	}
 
 	const auto preview_values = get_preview_values(data);
+	const auto battery_level = get_battery_level(pad_id);
 
-	if (pressed_button.first > 0)
-		return callback(pressed_button.first, pressed_button.second, pad_id, preview_values);
-	else
-		return callback(0, "", pad_id, preview_values);
+	if (callback)
+	{
+		if (pressed_button.first > 0)
+			return callback(pressed_button.first, pressed_button.second, pad_id, battery_level, preview_values);
+		else
+			return callback(0, "", pad_id, battery_level, preview_values);
+	}
 
 	return;
 }
@@ -413,7 +429,7 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad, const std::string
 	if (!pad_device)
 		return false;
 
-	int index = static_cast<int>(bindings.size());
+	const int index = static_cast<int>(bindings.size());
 	m_pad_configs[index].load();
 	pad_device->config = &m_pad_configs[index];
 	pad_config* profile = pad_device->config;
@@ -422,12 +438,25 @@ bool PadHandlerBase::bindPadToDevice(std::shared_ptr<Pad> pad, const std::string
 
 	std::array<u32, button::button_count> mapping = get_mapped_key_codes(pad_device, profile);
 
+	u32 pclass_profile = 0x0;
+
+	for (const auto product : input::get_products_by_class(profile->device_class_type))
+	{
+		if (product.vendor_id == profile->vendor_id && product.product_id == profile->product_id)
+		{
+			pclass_profile = product.pclass_profile;
+		}
+	}
+
 	pad->Init
 	(
 		CELL_PAD_STATUS_DISCONNECTED,
 		CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_HP_ANALOG_STICK | CELL_PAD_CAPABILITY_ACTUATOR | CELL_PAD_CAPABILITY_SENSOR_MODE,
 		CELL_PAD_DEV_TYPE_STANDARD,
-		profile->device_class_type
+		profile->device_class_type,
+		pclass_profile,
+		profile->vendor_id,
+		profile->product_id
 	);
 
 	pad->m_buttons.emplace_back(CELL_PAD_BTN_OFFSET_DIGITAL1, mapping[button::up], CELL_PAD_CTRL_UP);
@@ -524,12 +553,12 @@ void PadHandlerBase::get_mapping(const std::shared_ptr<PadDevice>& device, const
 		bool pressed;
 
 		// m_keyCodeMin is the mapped key for left or down
-		u32 key_min = pad->m_sticks[i].m_keyCodeMin;
+		const u32 key_min = pad->m_sticks[i].m_keyCodeMin;
 		u16 val_min = button_values[key_min];
 		TranslateButtonPress(device, key_min, pressed, val_min, true);
 
 		// m_keyCodeMax is the mapped key for right or up
-		u32 key_max = pad->m_sticks[i].m_keyCodeMax;
+		const u32 key_max = pad->m_sticks[i].m_keyCodeMax;
 		u16 val_max = button_values[key_max];
 		TranslateButtonPress(device, key_max, pressed, val_max, true);
 
@@ -590,7 +619,7 @@ void PadHandlerBase::ThreadProc()
 		{
 			if (!last_connection_status[i])
 			{
-				LOG_SUCCESS(HLE, "%s device %d connected", m_type, i);
+				input_log.success("%s device %d connected", m_type, i);
 				pad->m_port_status |= CELL_PAD_STATUS_CONNECTED;
 				pad->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 				last_connection_status[i] = true;
@@ -606,7 +635,7 @@ void PadHandlerBase::ThreadProc()
 		{
 			if (last_connection_status[i])
 			{
-				LOG_ERROR(HLE, "%s device %d disconnected", m_type, i);
+				input_log.error("%s device %d disconnected", m_type, i);
 				pad->m_port_status &= ~CELL_PAD_STATUS_CONNECTED;
 				pad->m_port_status |= CELL_PAD_STATUS_ASSIGN_CHANGES;
 				last_connection_status[i] = false;
@@ -621,16 +650,5 @@ void PadHandlerBase::ThreadProc()
 		get_mapping(device, pad);
 		get_extended_info(device, pad);
 		apply_pad_data(device, pad);
-
-#ifdef _WIN32
-		for (const auto& btn : pad->m_buttons)
-		{
-			if (pad->m_buttons[i].m_pressed)
-			{
-				SetThreadExecutionState(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
-				break;
-			}
-		}
-#endif
 	}
 }

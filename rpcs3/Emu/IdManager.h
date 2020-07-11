@@ -18,22 +18,39 @@ namespace id_manager
 	{
 		static_assert(sizeof(T) == 0, "ID object must specify: id_base, id_step, id_count");
 
-		static const u32 base    = 1;     // First ID (N = 0)
-		static const u32 step    = 1;     // Any ID: N * id_step + id_base
-		static const u32 count   = 65535; // Limit: N < id_count
-		static const u32 invalid = 0;
+		static constexpr u32 base    = 1;     // First ID (N = 0)
+		static constexpr u32 step    = 1;     // Any ID: N * id_step + id_base
+		static constexpr u32 count   = 65535; // Limit: N < id_count
+		static constexpr u32 invalid = 0;
+		static constexpr std::pair<u32, u32> invl_range{0, 0};
+	};
+
+	template <typename T, typename = void>
+	struct invl_range_extract_impl
+	{
+		static constexpr std::pair<u32, u32> invl_range{0, 0};
+	};
+
+	template <typename T>
+	struct invl_range_extract_impl<T, std::void_t<decltype(&T::id_invl_range)>>
+	{
+		static constexpr std::pair<u32, u32> invl_range = T::id_invl_range;
 	};
 
 	template <typename T>
 	struct id_traits<T, std::void_t<decltype(&T::id_base), decltype(&T::id_step), decltype(&T::id_count)>>
 	{
-		static const u32 base    = T::id_base;
-		static const u32 step    = T::id_step;
-		static const u32 count   = T::id_count;
-		static const u32 invalid = -+!base;
+		static constexpr u32 base    = T::id_base;
+		static constexpr u32 step    = T::id_step;
+		static constexpr u32 count   = T::id_count;
+		static constexpr u32 invalid = -+!base;
 
-		// Note: full 32 bits range cannot be used at current implementation
-		static_assert(count > 0 && step > 0 && u64{step} * count + base < u64{UINT32_MAX} + (base != 0 ? 1 : 0), "ID traits: invalid object range");
+		static constexpr std::pair<u32, u32> invl_range = invl_range_extract_impl<T>::invl_range;
+
+		static_assert(count && step && u64{step} * (count - 1) + base < u64{UINT32_MAX} + (base != 0 ? 1 : 0), "ID traits: invalid object range");
+	
+		// TODO: Add more conditions
+		static_assert(!invl_range.second || (u64{invl_range.second} + invl_range.first <= 32 /*....*/ ));
 	};
 
 	// Correct usage testing
@@ -138,8 +155,10 @@ class idm
 	{
 		using traits = id_manager::id_traits<T>;
 
+		constexpr u32 mask_out = ((1u << traits::invl_range.second) - 1) << traits::invl_range.first;
+
 		// Note: if id is lower than base, diff / step will be higher than count
-		u32 diff = id - traits::base;
+		u32 diff = (id & ~mask_out) - traits::base;
 
 		if (diff % traits::step)
 		{
@@ -195,6 +214,11 @@ class idm
 			return ptr.operator bool();
 		}
 
+		T& operator*() const
+		{
+			return *ptr;
+		}
+
 		T* operator->() const
 		{
 			return ptr.get();
@@ -213,6 +237,11 @@ class idm
 			return ptr != nullptr;
 		}
 
+		T& operator*() const
+		{
+			return *ptr;
+		}
+
 		T* operator->() const
 		{
 			return ptr;
@@ -220,7 +249,7 @@ class idm
 	};
 
 	// Prepare new ID (returns nullptr if out of resources)
-	static id_manager::id_map::pointer allocate_id(const id_manager::id_key& info, u32 base, u32 step, u32 count);
+	static id_manager::id_map::pointer allocate_id(const id_manager::id_key& info, u32 base, u32 step, u32 count, std::pair<u32, u32> invl_range);
 
 	// Find ID (additionally check type if types are not equal)
 	template <typename T, typename Type>
@@ -248,7 +277,10 @@ class idm
 		{
 			if (std::is_same<T, Type>::value || data.first.type() == get_type<Type>())
 			{
-				return &data;
+				if (!id_manager::id_traits<Type>::invl_range.second || data.first.value() == id)
+				{
+					return &data;
+				}
 			}
 		}
 
@@ -270,7 +302,7 @@ class idm
 		// Allocate new id
 		std::lock_guard lock(id_manager::g_mutex);
 
-		if (auto* place = allocate_id(info, traits::base, traits::step, traits::count))
+		if (auto* place = allocate_id(info, traits::base, traits::step, traits::count, traits::invl_range))
 		{
 			// Get object, store it
 			place->second = provider();
@@ -290,6 +322,14 @@ public:
 
 	// Remove all objects
 	static void clear();
+
+	// Remove all objects of a type
+	template <typename T>
+	static inline void clear()
+	{
+		std::lock_guard lock(id_manager::g_mutex);
+		g_map[id_manager::typeinfo::get_index<T>()].clear();
+	}
 
 	// Get last ID (updated in create_id/allocate_id)
 	static inline u32 last_id()
@@ -408,12 +448,12 @@ public:
 	{
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return nullptr;
 		}
 
-		return {found->second, static_cast<Get*>(found->second.get())};
+		return std::static_pointer_cast<Get>(found->second);
 	}
 
 	// Get the object
@@ -424,12 +464,12 @@ public:
 
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return nullptr;
 		}
 
-		return {found->second, static_cast<Get*>(found->second.get())};
+		return std::static_pointer_cast<Get>(found->second);
 	}
 
 	// Get the object, access object under reader lock
@@ -440,7 +480,7 @@ public:
 
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
+		if (found == nullptr) [[unlikely]]
 		{
 			return {nullptr};
 		}
@@ -532,25 +572,43 @@ public:
 		return true;
 	}
 
-	// Remove the ID and return the object
-	template <typename T, typename Get = T>
-	static inline std::shared_ptr<Get> withdraw(u32 id)
+	// Remove the ID if matches the weak/shared ptr
+	template <typename T, typename Get = T, typename Ptr>
+	static inline bool remove_verify(u32 id, Ptr sptr)
 	{
 		std::shared_ptr<void> ptr;
 		{
 			std::lock_guard lock(id_manager::g_mutex);
 
-			if (const auto found = find_id<T, Get>(id))
+			if (const auto found = find_id<T, Get>(id); found && 
+				(!found->second.owner_before(sptr) && !sptr.owner_before(found->second)))
 			{
 				ptr = std::move(found->second);
 			}
 			else
 			{
-				return nullptr;
+				return false;
 			}
 		}
 
-		return {ptr, static_cast<Get*>(ptr.get())};
+		return true;
+	}
+
+	// Remove the ID and return the object
+	template <typename T, typename Get = T>
+	static inline std::shared_ptr<Get> withdraw(u32 id)
+	{
+		std::shared_ptr<Get> ptr;
+		{
+			std::lock_guard lock(id_manager::g_mutex);
+
+			if (const auto found = find_id<T, Get>(id))
+			{
+				ptr = std::static_pointer_cast<Get>(::as_rvalue(std::move(found->second)));
+			}
+		}
+
+		return ptr;
 	}
 
 	// Remove the ID after accessing the object under writer lock, return the object and propagate return value
@@ -566,8 +624,7 @@ public:
 			if constexpr (std::is_void_v<FRT>)
 			{
 				func(*_ptr);
-				std::shared_ptr<void> ptr = std::move(found->second);
-				return {ptr, static_cast<Get*>(ptr.get())};
+				return std::static_pointer_cast<Get>(::as_rvalue(std::move(found->second)));
 			}
 			else
 			{
@@ -579,8 +636,7 @@ public:
 					return {{found->second, _ptr}, std::move(ret)};
 				}
 
-				std::shared_ptr<void> ptr = std::move(found->second);
-				return {{ptr, static_cast<Get*>(ptr.get())}, std::move(ret)};
+				return {std::static_pointer_cast<Get>(::as_rvalue(std::move(found->second))), std::move(ret)};
 			}
 		}
 

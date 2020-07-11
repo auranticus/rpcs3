@@ -21,8 +21,9 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 23: return "sys_process_wait_for_child2";
 	case 25: return "sys_process_get_sdk_version";
 	case 26: return "_sys_process_exit2";
+	case 27: return "sys_process_spawns_a_self2";
 	case 28: return "_sys_process_get_number_of_object";
-	case 29: return "sys_process_get_id";
+	case 29: return "sys_process_get_id2";
 	case 30: return "_sys_process_get_paramsfo";
 	case 31: return "sys_process_get_ppu_guid";
 	case 41: return "_sys_ppu_thread_exit";
@@ -171,6 +172,7 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 197: return "sys_raw_spu_get_spu_cfg";
 	case 198: return "sys_spu_thread_recover_page_fault";
 	case 199: return "sys_raw_spu_recover_page_fault";
+	case 213: return "sys_console_write2";
 	case 215: return "sys_dbg_mat_set_condition";
 	case 216: return "sys_dbg_mat_get_condition";
 	case 230: return "sys_isolated_spu_create";
@@ -191,6 +193,7 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 250: return "sys_spu_thread_group_set_cooperative_victims";
 	case 251: return "sys_spu_thread_group_connect_event_all_threads";
 	case 252: return "sys_spu_thread_group_disconnect_event_all_threads";
+	case 253: return "sys_spu_thread_group_syscall_253";
 	case 254: return "sys_spu_thread_group_log";
 	case 260: return "sys_spu_image_open_by_fd";
 	case 300: return "sys_vm_memory_map";
@@ -211,7 +214,7 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 325: return "sys_memory_container_destroy";
 	case 326: return "sys_mmapper_allocate_fixed_address";
 	case 327: return "sys_mmapper_enable_page_fault_notification";
-	case 328: return "sys_mmapper_allocate_shared_memory_ext";
+	case 328: return "sys_mmapper_allocate_shared_memory_from_container_ext";
 	case 329: return "sys_mmapper_free_shared_memory";
 	case 330: return "sys_mmapper_allocate_address";
 	case 331: return "sys_mmapper_free_address";
@@ -222,6 +225,7 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 336: return "sys_mmapper_change_address_access_right";
 	case 337: return "sys_mmapper_search_and_map";
 	case 338: return "sys_mmapper_get_shared_memory_attribute";
+	case 339: return "sys_mmapper_allocate_shared_memory_ext";
 	case 341: return "sys_memory_container_create";
 	case 342: return "sys_memory_container_destroy";
 	case 343: return "sys_memory_container_get_size";
@@ -322,6 +326,8 @@ extern std::string ppu_get_syscall_name(u64 code)
 	case 509: return "sys_hid_manager_release_focus";
 	case 510: return "sys_hid_manager_check_focus";
 	case 511: return "sys_hid_manager_set_master_process";
+	case 512: return "sys_hid_manager_is_process_permission_root";
+	case 514: return "sys_hid_manager_514";
 	case 516: return "sys_config_open";
 	case 517: return "sys_config_close";
 	case 518: return "sys_config_get_service_event";
@@ -634,9 +640,9 @@ extern std::string ppu_get_syscall_name(u64 code)
 }
 
 // Get function name by FNID
-extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
+extern std::string ppu_get_function_name(const std::string& _module, u32 fnid)
 {
-	if (module == "") switch (fnid)
+	if (_module.empty()) switch (fnid)
 	{
 	case 0x0d10fd3f: return "module_prologue";
 	case 0x330f7005: return "module_epilogue";
@@ -646,7 +652,7 @@ extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
 	}
 
 	// Check known FNIDs
-	if (module == "sys_libc" || module == "sys_libm") switch (fnid)
+	if (_module == "sys_libc" || _module == "sys_libm") switch (fnid)
 	{
 	case 0x00acf0e5: return "spu_printf_finalize";
 	case 0x00fb4a6b: return "spu_thread_sprintf";
@@ -1721,7 +1727,7 @@ extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
 	case 0xfffe79bf: return "_LCmulcc";
 	}
 
-	if (module == "sys_libstdcxx") switch (fnid)
+	if (_module == "sys_libstdcxx") switch (fnid)
 	{
 	case 0x002c338b: return "_ZNKSt8time_getIcSt19istreambuf_iteratorIcSt11char_traitsIcEEE16do_get_monthnameES3_S3_RSt8ios_baseRNSt5_IosbIiE8_IostateEPSt2tm";
 	case 0x002e18d8: return "_ZNSt6locale7_LocimpD0Ev";
@@ -2281,7 +2287,7 @@ extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
 	case 0xfff6ef55: return "_ZNKSt7num_getIwSt19istreambuf_iteratorIwSt11char_traitsIwEEE6do_getES3_S3_RSt8ios_baseRNSt5_IosbIiE8_IostateERb";
 	}
 
-	if (module == "sysPrxForUser") switch (fnid)
+	if (_module == "sysPrxForUser") switch (fnid)
 	{
 	case 0x02e20ec1: return "__sys_printf_basename";
 	case 0x0341bb97: return "sys_prx_get_module_id_by_address";
@@ -2416,7 +2422,7 @@ extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
 	}
 
 	// Check registered functions
-	if (const auto sm = ppu_module_manager::get_module(module))
+	if (const auto sm = ppu_module_manager::get_module(_module))
 	{
 		const auto found = sm->functions.find(fnid);
 
@@ -2430,15 +2436,15 @@ extern std::string ppu_get_function_name(const std::string& module, u32 fnid)
 }
 
 // Get variable name by VNID
-extern std::string ppu_get_variable_name(const std::string& module, u32 vnid)
+extern std::string ppu_get_variable_name(const std::string& _module, u32 vnid)
 {
-	if (module == "") switch (vnid)
+	if (_module.empty()) switch (vnid)
 	{
 	// these arent the actual hash, but its close enough
 	case 0xd7f43016: return "module_info";
 	}
 	// Check known FNIDs
-	if (module == "sys_libc") switch (vnid)
+	if (_module == "sys_libc") switch (vnid)
 	{
 	case 0x071928b0: return "_LNan";
 	case 0x0a331920: return "_Clocale";
@@ -2490,7 +2496,7 @@ extern std::string ppu_get_variable_name(const std::string& module, u32 vnid)
 	case 0xff2f0cc7: return "_FEps";
 	}
 
-	if (module == "sys_libm") switch (vnid)
+	if (_module == "sys_libm") switch (vnid)
 	{
 	case 0x1cf745bc: return "_LErf_one";
 	case 0x2259ef96: return "_LGamma_big";
@@ -2505,7 +2511,7 @@ extern std::string ppu_get_variable_name(const std::string& module, u32 vnid)
 	}
 
 	// Check registered variables
-	if (const auto sm = ppu_module_manager::get_module(module))
+	if (const auto sm = ppu_module_manager::get_module(_module))
 	{
 		const auto found = sm->variables.find(vnid);
 
@@ -2524,9 +2530,9 @@ std::vector<ppu_function_t>& ppu_function_manager::access()
 	{
 		[](ppu_thread& ppu) -> bool
 		{
-			LOG_ERROR(PPU, "Unregistered function called (LR=0x%x)", ppu.lr);
+			ppu_log.error("Unregistered function called (LR=0x%x)", ppu.lr);
 			ppu.gpr[3] = 0;
-			ppu.cia = (u32)ppu.lr & ~3;
+			ppu.cia = static_cast<u32>(ppu.lr) & ~3;
 			return false;
 		},
 		[](ppu_thread& ppu) -> bool

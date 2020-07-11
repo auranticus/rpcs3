@@ -9,13 +9,15 @@
 #include "Emu/Cell/ErrorCodes.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
+#include "Emu/system_config.h"
 #include "Emu/System.h"
 
 #include <deque>
 #include <thread>
+#include <string_view>
 
 // attr_protocol (waiting scheduling policy)
-enum
+enum lv2_protocol : u32
 {
 	SYS_SYNC_FIFO                = 0x1, // First In, First Out Order
 	SYS_SYNC_PRIORITY            = 0x2, // Priority Order
@@ -64,6 +66,34 @@ struct lv2_obj
 
 	static const u32 id_step = 0x100;
 	static const u32 id_count = 8192;
+	static constexpr std::pair<u32, u32> id_invl_range = {0, 8};
+
+private:
+	enum thread_cmd : s32
+	{
+		yield_cmd = INT32_MIN,
+		enqueue_cmd,
+	};
+
+	// Function executed under IDM mutex, error will make the object creation fail and the error will be returned
+	CellError on_id_create()
+	{
+		return {};
+	}
+
+public:
+
+	static std::string name64(u64 name_u64)
+	{
+		const auto ptr = reinterpret_cast<const char*>(&name_u64);
+
+		// NTS string, ignore invalid/newline characters
+		// Example: "lv2\n\0tx" will be printed as "lv2" 
+		std::string str{ptr, std::find(ptr, ptr + 7, '\0')};
+		str.erase(std::remove_if(str.begin(), str.end(), [](uchar c){ return !std::isprint(c); }), str.end());
+
+		return str;
+	};
 
 	// Find and remove the object from the container (deque or vector)
 	template <typename T, typename E>
@@ -96,12 +126,12 @@ struct lv2_obj
 			return res;
 		}
 
-		u32 prio = -1;
+		s32 prio = 3071;
 		auto it = queue.cbegin();
 
 		for (auto found = it, end = queue.cend(); found != end; found++)
 		{
-			const u32 _prio = static_cast<E*>(*found)->prio;
+			const s32 _prio = static_cast<E*>(*found)->prio;
 
 			if (_prio < prio)
 			{
@@ -120,7 +150,7 @@ private:
 	static void sleep_unlocked(cpu_thread&, u64 timeout);
 
 	// Schedule the thread
-	static void awake_unlocked(cpu_thread*, u32 prio = -1);
+	static bool awake_unlocked(cpu_thread*, s32 prio = enqueue_cmd);
 
 public:
 	static void sleep(cpu_thread& cpu, const u64 timeout = 0)
@@ -130,16 +160,24 @@ public:
 		g_to_awake.clear();
 	}
 
-	static inline void awake(cpu_thread* const thread, const u32 prio = -1)
+	static inline bool awake(cpu_thread* const thread, s32 prio = enqueue_cmd)
 	{
+		vm::temporary_unlock();
 		std::lock_guard lock(g_mutex);
-		awake_unlocked(thread, prio);
+		return awake_unlocked(thread, prio);
 	}
 
-	static void yield(cpu_thread& thread)
+	// Returns true on successful context switch, false otherwise
+	static bool yield(cpu_thread& thread)
 	{
 		vm::temporary_unlock(thread);
-		awake(&thread, -4);
+		return awake(&thread, yield_cmd);
+	}
+
+	static void set_priority(cpu_thread& thread, s32 prio)
+	{
+		verify(HERE), prio + 512u < 3712;
+		awake(&thread, prio);
 	}
 
 	static inline void awake_all()
@@ -156,12 +194,17 @@ public:
 	static void cleanup();
 
 	template <typename T, typename F>
-	static error_code create(u32 pshared, u64 ipc_key, s32 flags, F&& make)
+	static error_code create(u32 pshared, u64 ipc_key, s32 flags, F&& make, bool key_not_zero = true)
 	{
 		switch (pshared)
 		{
 		case SYS_SYNC_PROCESS_SHARED:
 		{
+			if (key_not_zero && ipc_key == 0)
+			{
+				return CELL_EINVAL;
+			}
+
 			switch (flags)
 			{
 			case SYS_SYNC_NEWLY_CREATED:
@@ -169,23 +212,45 @@ public:
 			{
 				std::shared_ptr<T> result = make();
 
-				if (!ipc_manager<T, u64>::add(ipc_key, [&] { if (!idm::import_existing<lv2_obj, T>(result)) result.reset(); return result; }, &result))
+				CellError error{};
+
+				if (!ipc_manager<T, u64>::add(ipc_key, [&]()
 				{
+					if (!idm::import<lv2_obj, T>([&]()
+					{
+						if (result && (error = result->on_id_create()))
+							result.reset();
+						return result;
+					}))
+					{
+						result.reset();
+					}
+
+					return result;
+				}, &result))
+				{
+					if (error)
+					{
+						return error;
+					}
+
 					if (flags == SYS_SYNC_NEWLY_CREATED)
 					{
 						return CELL_EEXIST;
 					}
 
-					if (!idm::import_existing<lv2_obj, T>(result))
+					error = CELL_EAGAIN;
+
+					if (!idm::import<lv2_obj, T>([&]() { if (result && (error = result->on_id_create())) result.reset(); return std::move(result); }))
 					{
-						return CELL_EAGAIN;
+						return error;
 					}
 
 					return CELL_OK;
 				}
 				else if (!result)
 				{
-					return CELL_EAGAIN;
+					return error ? CELL_EAGAIN : error;
 				}
 				else
 				{
@@ -201,9 +266,11 @@ public:
 					return CELL_ESRCH;
 				}
 
-				if (!idm::import_existing<lv2_obj, T>(result))
+				CellError error = CELL_EAGAIN;
+
+				if (!idm::import<lv2_obj, T>([&]() { if (result && (error = result->on_id_create())) result.reset(); return std::move(result); }))
 				{
-					return CELL_EAGAIN;
+					return error;
 				}
 
 				return CELL_OK;
@@ -216,9 +283,13 @@ public:
 		}
 		case SYS_SYNC_NOT_PROCESS_SHARED:
 		{
-			if (!idm::import<lv2_obj, T>(std::forward<F>(make)))
+			std::shared_ptr<T> result = make();
+
+			CellError error = CELL_EAGAIN;
+
+			if (!idm::import<lv2_obj, T>([&]() { if (result && (error = result->on_id_create())) result.reset(); return std::move(result); }))
 			{
-				return CELL_EAGAIN;
+				return error;
 			}
 
 			return CELL_OK;
@@ -230,25 +301,20 @@ public:
 		}
 	}
 
-	template<bool is_usleep = false>
+	template<bool is_usleep = false, bool scale = true>
 	static bool wait_timeout(u64 usec, cpu_thread* const cpu = {})
 	{
-		static_assert(UINT64_MAX / cond_variable::max_timeout >= g_cfg.core.clocks_scale.max, "timeout may overflow during scaling");
+		static_assert(UINT64_MAX / cond_variable::max_timeout >= 100, "max timeout is not valid for scaling");
 
-		// Clamp to max timeout accepted
-		const u64 max_usec = cond_variable::max_timeout * 100 / g_cfg.core.clocks_scale.max;
+		if constexpr (scale)
+		{
+			// Scale time
+			usec = std::min<u64>(usec, UINT64_MAX / 100) * 100 / g_cfg.core.clocks_scale;
+		}
 
-		// Now scale the result
-		usec = (std::min<u64>(usec, max_usec) * g_cfg.core.clocks_scale) / 100;
+		// Clamp
+		usec = std::min<u64>(usec, cond_variable::max_timeout);
 
-#ifdef __linux__
-		// TODO: Confirm whether Apple or any BSD can benefit from this as well
-		constexpr u32 host_min_quantum = 50;
-#else
-		// Host scheduler quantum for windows (worst case)
-		// NOTE: On ps3 this function has very high accuracy
-		constexpr u32 host_min_quantum = 500;
-#endif
 		extern u64 get_system_time();
 
 		u64 passed = 0;
@@ -258,6 +324,15 @@ public:
 		while (usec >= passed)
 		{
 			remaining = usec - passed;
+#ifdef __linux__
+			// NOTE: Assumption that timer initialization has succeeded
+			u64 host_min_quantum = is_usleep && remaining <= 1000 ? 10 : 50;
+#else
+			// Host scheduler quantum for windows (worst case)
+			// NOTE: On ps3 this function has very high accuracy
+			constexpr u64 host_min_quantum = 500;
+#endif
+			// TODO: Tune for other non windows operating sytems
 
 			if (g_cfg.core.sleep_timers_accuracy < (is_usleep ? sleep_timers_accuracy_level::_usleep : sleep_timers_accuracy_level::_all_timers))
 			{
@@ -282,7 +357,7 @@ public:
 				}
 			}
 
-			if (Emu.IsStopped())
+			if (thread_ctrl::state() == thread_state::aborting)
 			{
 				return false;
 			}

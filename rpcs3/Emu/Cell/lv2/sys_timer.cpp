@@ -1,7 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_timer.h"
 
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -17,18 +16,22 @@ extern u64 get_guest_system_time();
 
 void lv2_timer_context::operator()()
 {
-	while (!Emu.IsStopped())
+	while (thread_ctrl::state() != thread_state::aborting)
 	{
-		const u32 _state = state;
-
-		if (_state == SYS_TIMER_STATE_RUN)
+		if (state == SYS_TIMER_STATE_RUN)
 		{
 			const u64 _now = get_guest_system_time();
-			const u64 next = expire;
+			u64 next = expire;
 
 			if (_now >= next)
 			{
 				std::lock_guard lock(mutex);
+
+				if (next = expire; _now < next)
+				{
+					// expire was updated in the middle, don't send an event
+					continue;
+				}
 
 				if (const auto queue = port.lock())
 				{
@@ -37,39 +40,28 @@ void lv2_timer_context::operator()()
 
 				if (period)
 				{
-					// Set next expiration time and check again (HACK)
+					// Set next expiration time and check again
 					expire += period;
 					continue;
 				}
 
 				// Stop after oneshot
-				state.compare_and_swap_test(SYS_TIMER_STATE_RUN, SYS_TIMER_STATE_STOP);
+				state.release(SYS_TIMER_STATE_STOP);
 				continue;
 			}
 
 			// TODO: use single global dedicated thread for busy waiting, no timer threads
 			lv2_obj::wait_timeout(next - _now);
+			continue;
 		}
-		else if (_state == SYS_TIMER_STATE_STOP)
-		{
-			thread_ctrl::wait_for(10000);
-		}
-		else
-		{
-			break;
-		}
-	}
-}
 
-void lv2_timer_context::on_abort()
-{
-	// Signal thread using invalid state
-	state = -1;
+		thread_ctrl::wait();
+	}
 }
 
 error_code sys_timer_create(ppu_thread& ppu, vm::ptr<u32> timer_id)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.warning("sys_timer_create(timer_id=*0x%x)", timer_id);
 
@@ -84,19 +76,18 @@ error_code sys_timer_create(ppu_thread& ppu, vm::ptr<u32> timer_id)
 
 error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.warning("sys_timer_destroy(timer_id=0x%x)", timer_id);
 
 	const auto timer = idm::withdraw<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer) -> CellError
 	{
-		std::lock_guard lock(timer.mutex);
-
-		if (!timer.port.expired())
+		if (std::shared_lock lock(timer.mutex); lv2_event_queue::check(timer.port))
 		{
 			return CELL_EISCONN;
 		}
 
+		timer = thread_state::aborting;
 		return {};
 	});
 
@@ -115,17 +106,15 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 
 error_code sys_timer_get_information(ppu_thread& ppu, u32 timer_id, vm::ptr<sys_timer_information_t> info)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.trace("sys_timer_get_information(timer_id=0x%x, info=*0x%x)", timer_id, info);
 
+	sys_timer_information_t _info{};
+
 	const auto timer = idm::check<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer)
 	{
-		std::lock_guard lock(timer.mutex);
-
-		info->next_expire = timer.expire;
-		info->period      = timer.period;
-		info->timer_state = timer.state;
+		timer.get_information(_info);
 	});
 
 	if (!timer)
@@ -133,12 +122,13 @@ error_code sys_timer_get_information(ppu_thread& ppu, u32 timer_id, vm::ptr<sys_
 		return CELL_ESRCH;
 	}
 
+	std::memcpy(info.get_ptr(), &_info, info.size());
 	return CELL_OK;
 }
 
 error_code _sys_timer_start(ppu_thread& ppu, u32 timer_id, u64 base_time, u64 period)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.trace("_sys_timer_start(timer_id=0x%x, base_time=0x%llx, period=0x%llx)", timer_id, base_time, period);
 
@@ -195,7 +185,7 @@ error_code _sys_timer_start(ppu_thread& ppu, u32 timer_id, u64 base_time, u64 pe
 
 error_code sys_timer_stop(ppu_thread& ppu, u32 timer_id)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.trace("sys_timer_stop()");
 
@@ -216,7 +206,7 @@ error_code sys_timer_stop(ppu_thread& ppu, u32 timer_id)
 
 error_code sys_timer_connect_event_queue(ppu_thread& ppu, u32 timer_id, u32 queue_id, u64 name, u64 data1, u64 data2)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.warning("sys_timer_connect_event_queue(timer_id=0x%x, queue_id=0x%x, name=0x%llx, data1=0x%llx, data2=0x%llx)", timer_id, queue_id, name, data1, data2);
 
@@ -231,14 +221,14 @@ error_code sys_timer_connect_event_queue(ppu_thread& ppu, u32 timer_id, u32 queu
 
 		std::lock_guard lock(timer.mutex);
 
-		if (!timer.port.expired())
+		if (lv2_event_queue::check(timer.port))
 		{
 			return CELL_EISCONN;
 		}
 
 		// Connect event queue
 		timer.port   = std::static_pointer_cast<lv2_event_queue>(found->second);
-		timer.source = name ? name : ((u64)process_getpid() << 32) | timer_id;
+		timer.source = name ? name : (s64{process_getpid()} << 32) | u64{timer_id};
 		timer.data1  = data1;
 		timer.data2  = data2;
 		return {};
@@ -259,7 +249,7 @@ error_code sys_timer_connect_event_queue(ppu_thread& ppu, u32 timer_id, u32 queu
 
 error_code sys_timer_disconnect_event_queue(ppu_thread& ppu, u32 timer_id)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.warning("sys_timer_disconnect_event_queue(timer_id=0x%x)", timer_id);
 
@@ -267,12 +257,13 @@ error_code sys_timer_disconnect_event_queue(ppu_thread& ppu, u32 timer_id)
 	{
 		std::lock_guard lock(timer.mutex);
 
-		if (timer.port.expired())
+		timer.state = SYS_TIMER_STATE_STOP;
+
+		if (!lv2_event_queue::check(timer.port))
 		{
 			return CELL_ENOTCONN;
 		}
 
-		timer.state = SYS_TIMER_STATE_STOP;
 		timer.port.reset();
 		return {};
 	});
@@ -292,7 +283,7 @@ error_code sys_timer_disconnect_event_queue(ppu_thread& ppu, u32 timer_id)
 
 error_code sys_timer_sleep(ppu_thread& ppu, u32 sleep_time)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.trace("sys_timer_sleep(sleep_time=%d) -> sys_timer_usleep()", sleep_time);
 
@@ -301,7 +292,7 @@ error_code sys_timer_sleep(ppu_thread& ppu, u32 sleep_time)
 
 error_code sys_timer_usleep(ppu_thread& ppu, u64 sleep_time)
 {
-	vm::temporary_unlock(ppu);
+	ppu.state += cpu_flag::wait;
 
 	sys_timer.trace("sys_timer_usleep(sleep_time=0x%llx)", sleep_time);
 

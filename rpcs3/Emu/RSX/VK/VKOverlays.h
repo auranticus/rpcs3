@@ -4,6 +4,8 @@
 #include "VKFragmentProgram.h"
 #include "VKRenderTargets.h"
 #include "VKFramebuffer.h"
+#include "VKResourceManager.h"
+#include "VKRenderPass.h"
 
 #include "../Overlays/overlays.h"
 
@@ -26,17 +28,18 @@ namespace vk
 		VkFilter m_sampler_filter = VK_FILTER_LINEAR;
 		u32 m_num_usable_samplers = 1;
 
-		std::unordered_map<VkRenderPass, std::unique_ptr<vk::glsl::program>> m_program_cache;
+		std::unordered_map<u64, std::unique_ptr<vk::glsl::program>> m_program_cache;
 		std::unique_ptr<vk::sampler> m_sampler;
 		std::unique_ptr<vk::framebuffer> m_draw_fbo;
 		vk::data_heap m_vao;
 		vk::data_heap m_ubo;
-		vk::render_device* m_device = nullptr;
+		const vk::render_device* m_device = nullptr;
 
 		std::string vs_src;
 		std::string fs_src;
 
 		graphics_pipeline_state renderpass_config;
+		bool multi_primitive = false;
 
 		bool initialized = false;
 		bool compiled = false;
@@ -54,7 +57,30 @@ namespace vk
 			renderpass_config.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
 		}
 
-		~overlay_pass() = default;
+		~overlay_pass()
+		{
+			m_vao.destroy();
+			m_ubo.destroy();
+		}
+
+		u64 get_pipeline_key(VkRenderPass pass)
+		{
+			if (!multi_primitive)
+			{
+				// Default fast path
+				return reinterpret_cast<u64>(pass);
+			}
+			else
+			{
+				struct
+				{
+					u64 pass_value;
+					u64 config;
+				}
+				key{ reinterpret_cast<uintptr_t>(pass), static_cast<u64>(renderpass_config.ia.topology) };
+				return rpcs3::hash_struct(key);
+			}
+		}
 
 		void check_heap()
 		{
@@ -138,7 +164,7 @@ namespace vk
 			return fs_inputs;
 		}
 
-		virtual void get_dynamic_state_entries(VkDynamicState* /*state_descriptors*/, VkPipelineDynamicStateCreateInfo& /*info*/)
+		virtual void get_dynamic_state_entries(std::vector<VkDynamicState>& /*state_descriptors*/)
 		{}
 
 		virtual std::vector<VkPushConstantRange> get_push_constants()
@@ -151,13 +177,13 @@ namespace vk
 			check_heap();
 
 			const auto size = count * sizeof(f32);
-			m_vao_offset = (u32)m_vao.alloc<16>(size);
+			m_vao_offset = static_cast<u32>(m_vao.alloc<16>(size));
 			auto dst = m_vao.map(m_vao_offset, size);
 			std::memcpy(dst, data, size);
 			m_vao.unmap();
 		}
 
-		vk::glsl::program* build_pipeline(VkRenderPass render_pass)
+		vk::glsl::program* build_pipeline(u64 storage_key, VkRenderPass render_pass)
 		{
 			if (!compiled)
 			{
@@ -181,14 +207,15 @@ namespace vk
 			shader_stages[1].module = m_fragment_shader.get_handle();
 			shader_stages[1].pName = "main";
 
-			VkDynamicState dynamic_state_descriptors[VK_DYNAMIC_STATE_RANGE_SIZE] = {};
+			std::vector<VkDynamicState> dynamic_state_descriptors;
+			dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+			dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_SCISSOR);
+			get_dynamic_state_entries(dynamic_state_descriptors);
+
 			VkPipelineDynamicStateCreateInfo dynamic_state_info = {};
 			dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-			dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_VIEWPORT;
-			dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_SCISSOR;
-
-			get_dynamic_state_entries(dynamic_state_descriptors, dynamic_state_info);
-			dynamic_state_info.pDynamicStates = dynamic_state_descriptors;
+			dynamic_state_info.dynamicStateCount = ::size32(dynamic_state_descriptors);
+			dynamic_state_info.pDynamicStates = dynamic_state_descriptors.data();
 
 			VkVertexInputBindingDescription vb = { 0, 16, VK_VERTEX_INPUT_RATE_VERTEX };
 			VkVertexInputAttributeDescription via = { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
@@ -224,9 +251,9 @@ namespace vk
 
 			CHECK_RESULT(vkCreateGraphicsPipelines(*m_device, nullptr, 1, &info, NULL, &pipeline));
 
-			auto program = std::make_unique<vk::glsl::program>(*m_device, pipeline, get_vertex_inputs(), get_fragment_inputs());
+			auto program = std::make_unique<vk::glsl::program>(*m_device, pipeline, m_pipeline_layout, get_vertex_inputs(), get_fragment_inputs());
 			auto result = program.get();
-			m_program_cache[render_pass] = std::move(program);
+			m_program_cache[storage_key] = std::move(program);
 
 			return result;
 		}
@@ -234,11 +261,13 @@ namespace vk
 		void load_program(vk::command_buffer& cmd, VkRenderPass pass, const std::vector<vk::image_view*>& src)
 		{
 			vk::glsl::program *program = nullptr;
-			auto found = m_program_cache.find(pass);
+			const auto key = get_pipeline_key(pass);
+
+			auto found = m_program_cache.find(key);
 			if (found != m_program_cache.end())
 				program = found->second.get();
 			else
-				program = build_pipeline(pass);
+				program = build_pipeline(key, pass);
 
 			verify(HERE), m_used_descriptors < VK_OVERLAY_MAX_DRAW_CALLS;
 
@@ -262,7 +291,7 @@ namespace vk
 
 			program->bind_uniform({ m_ubo.heap->value, m_ubo_offset, std::max(m_ubo_length, 4u) }, 0, m_descriptor_set);
 
-			for (int n = 0; n < src.size(); ++n)
+			for (uint n = 0; n < src.size(); ++n)
 			{
 				VkDescriptorImageInfo info = { m_sampler->value, src[n]->value, src[n]->image()->current_layout };
 				program->bind_uniform(info, "fs" + std::to_string(n), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_descriptor_set);
@@ -276,7 +305,7 @@ namespace vk
 			vkCmdBindVertexBuffers(cmd, 0, 1, &buffers, &offsets);
 		}
 
-		void create(vk::render_device &dev)
+		virtual void create(const vk::render_device &dev)
 		{
 			if (!initialized)
 			{
@@ -287,7 +316,7 @@ namespace vk
 			}
 		}
 
-		void destroy()
+		virtual void destroy()
 		{
 			if (initialized)
 			{
@@ -330,15 +359,15 @@ namespace vk
 		virtual void set_up_viewport(vk::command_buffer &cmd, u32 x, u32 y, u32 w, u32 h)
 		{
 			VkViewport vp{};
-			vp.x = (f32)x;
-			vp.y = (f32)y;
-			vp.width = (f32)w;
-			vp.height = (f32)h;
+			vp.x = static_cast<f32>(x);
+			vp.y = static_cast<f32>(y);
+			vp.width = static_cast<f32>(w);
+			vp.height = static_cast<f32>(h);
 			vp.minDepth = 0.f;
 			vp.maxDepth = 1.f;
 			vkCmdSetViewport(cmd, 0, 1, &vp);
 
-			VkRect2D vs = { { (s32)x, (s32)y }, { w, h } };
+			VkRect2D vs = { { static_cast<s32>(x), static_cast<s32>(y) }, { w, h } };
 			vkCmdSetScissor(cmd, 0, 1, &vs);
 		}
 
@@ -347,18 +376,8 @@ namespace vk
 			load_program(cmd, render_pass, src);
 			set_up_viewport(cmd, viewport.x1, viewport.y1, viewport.width(), viewport.height());
 
-			VkRenderPassBeginInfo rp_begin = {};
-			rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			rp_begin.renderPass = render_pass;
-			rp_begin.framebuffer = fbo->value;
-			rp_begin.renderArea.offset.x = (s32)viewport.x1;
-			rp_begin.renderArea.offset.y = (s32)viewport.y1;
-			rp_begin.renderArea.extent.width = viewport.width();
-			rp_begin.renderArea.extent.height = viewport.height();
-
-			vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
+			vk::begin_renderpass(cmd, render_pass, fbo->value, viewport);
 			emit_geometry(cmd);
-			vkCmdEndRenderPass(cmd);
 		}
 
 		void run(vk::command_buffer &cmd, const areau& viewport, vk::image* target, const std::vector<vk::image_view*>& src, VkRenderPass render_pass)
@@ -377,68 +396,6 @@ namespace vk
 		}
 	};
 
-	// @Deprecated!!
-	struct depth_convert_pass : public overlay_pass
-	{
-		f32 src_scale_x;
-		f32 src_scale_y;
-
-		depth_convert_pass()
-		{
-			vs_src =
-				"#version 450\n"
-				"#extension GL_ARB_separate_shader_objects : enable\n"
-				"layout(std140, set=0, binding=0) uniform static_data{ vec4 regs[8]; };\n"
-				"layout(location=0) out vec2 tc0;\n"
-				"\n"
-				"void main()\n"
-				"{\n"
-				"	vec2 positions[] = {vec2(-1., -1.), vec2(1., -1.), vec2(-1., 1.), vec2(1., 1.)};\n"
-				"	vec2 coords[] = {vec2(0., 0.), vec2(1., 0.), vec2(0., 1.), vec2(1., 1.)};\n"
-				"	gl_Position = vec4(positions[gl_VertexIndex % 4], 0., 1.);\n"
-				"	tc0 = coords[gl_VertexIndex % 4] * regs[0].xy;\n"
-				"}\n";
-
-			fs_src =
-				"#version 420\n"
-				"#extension GL_ARB_separate_shader_objects : enable\n"
-				"#extension GL_ARB_shader_stencil_export : enable\n\n"
-				"layout(set=0, binding=1) uniform sampler2D fs0;\n"
-				"layout(location=0) in vec2 tc0;\n"
-				"\n"
-				"void main()\n"
-				"{\n"
-				"	vec4 rgba_in = texture(fs0, tc0);\n"
-				"	gl_FragDepth = rgba_in.w * 0.99609 + rgba_in.x * 0.00389 + rgba_in.y * 0.00002;\n"
-				"}\n";
-
-			renderpass_config.set_depth_mask(true);
-			renderpass_config.enable_depth_test(VK_COMPARE_OP_ALWAYS);
-		}
-
-		void update_uniforms(vk::command_buffer& /*cmd*/, vk::glsl::program* /*program*/) override
-		{
-			m_ubo_offset = (u32)m_ubo.alloc<256>(128);
-			auto dst = (f32*)m_ubo.map(m_ubo_offset, 128);
-			dst[0] = src_scale_x;
-			dst[1] = src_scale_y;
-			dst[2] = 0.f;
-			dst[3] = 0.f;
-			m_ubo.unmap();
-		}
-
-		void run(vk::command_buffer& cmd, const areai& src_area, const areai& dst_area, vk::image_view* src, vk::image* dst, VkRenderPass render_pass)
-		{
-			auto real_src = src->image();
-			verify(HERE), real_src;
-
-			src_scale_x = f32(src_area.x2) / real_src->width();
-			src_scale_y = f32(src_area.y2) / real_src->height();
-
-			overlay_pass::run(cmd, dst_area, dst, src, render_pass);
-		}
-	};
-
 	struct ui_overlay_renderer : public overlay_pass
 	{
 		f32 m_time = 0.f;
@@ -450,13 +407,14 @@ namespace vk
 		bool m_clip_enabled = false;
 		int  m_texture_type;
 		areaf m_clip_region;
-		size2f m_viewport_size;
+		coordf m_viewport;
 
 		std::vector<std::unique_ptr<vk::image>> resources;
 		std::unordered_map<u64, std::unique_ptr<vk::image>> font_cache;
 		std::unordered_map<u64, std::unique_ptr<vk::image_view>> view_cache;
 		std::unordered_map<u64, std::pair<u32, std::unique_ptr<vk::image>>> temp_image_cache;
 		std::unordered_map<u64, std::unique_ptr<vk::image_view>> temp_view_cache;
+		rsx::overlays::primitive_type m_current_primitive_type = rsx::overlays::primitive_type::quad_list;
 
 		ui_overlay_renderer()
 		{
@@ -471,9 +429,19 @@ namespace vk
 				"layout(location=3) out vec4 clip_rect;\n"
 				"layout(location=4) out vec4 parameters2;\n"
 				"\n"
-				"vec2 snap_to_grid(vec2 normalized)\n"
+				"vec2 snap_to_grid(const in vec2 normalized)\n"
 				"{\n"
 				"	return (floor(normalized * regs[5].xy) + 0.5) / regs[5].xy;\n"
+				"}\n"
+				"\n"
+				"vec4 clip_to_ndc(const in vec4 coord)\n"
+				"{\n"
+				"	return (coord * regs[0].zwzw) / regs[0].xyxy;\n"
+				"}\n"
+				"\n"
+				"vec4 ndc_to_window(const in vec4 coord)\n"
+				"{\n"
+				"	return fma(coord, regs[5].xyxy, regs[5].zwzw);\n"
 				"}\n"
 				"\n"
 				"void main()\n"
@@ -482,9 +450,8 @@ namespace vk
 				"	color = regs[1];\n"
 				"	parameters = regs[2];\n"
 				"	parameters2 = regs[4];\n"
-				"	clip_rect = (regs[3] * regs[0].zwzw) / regs[0].xyxy;  // Normalized coords\n"
-				"	clip_rect *= regs[5].xyxy;  // Window coords\n"
-				"	vec4 pos = vec4((in_pos.xy * regs[0].zw) / regs[0].xy, 0.5, 1.);\n"
+				"	clip_rect = ndc_to_window(clip_to_ndc(regs[3]));\n"
+				"	vec4 pos = vec4(clip_to_ndc(in_pos).xy, 0.5, 1.);\n"
 				"	pos.xy = snap_to_grid(pos.xy);\n"
 				"	gl_Position = (pos + pos) - 1.;\n"
 				"}\n";
@@ -493,6 +460,7 @@ namespace vk
 				"#version 420\n"
 				"#extension GL_ARB_separate_shader_objects : enable\n"
 				"layout(set=0, binding=1) uniform sampler2D fs0;\n"
+				"layout(set=0, binding=2) uniform sampler2DArray fs1;\n"
 				"layout(location=0) in vec2 tc0;\n"
 				"layout(location=1) in vec4 color;\n"
 				"layout(location=2) in vec4 parameters;\n"
@@ -566,12 +534,28 @@ namespace vk
 				"		diff_color.a *= (sin(parameters.x) + 1.f) * 0.5f;\n"
 				"\n"
 				"	if (parameters.z < 1.)\n"
+				"	{\n"
 				"		ocol = diff_color;\n"
+				"	}\n"
+				"	else if (parameters.z > 2.)\n"
+				"	{\n"
+				"		ocol = texture(fs1, vec3(tc0.x, fract(tc0.y), trunc(tc0.y))).rrrr * diff_color;\n"
+				"	}\n"
 				"	else if (parameters.z > 1.)\n"
+				"	{\n"
 				"		ocol = texture(fs0, tc0).rrrr * diff_color;\n"
+				"	}\n"
 				"	else\n"
+				"	{\n"
 				"		ocol = sample_image(fs0, tc0, parameters2.x).bgra * diff_color;\n"
+				"	}\n"
 				"}\n";
+
+			// Allow mixed primitive rendering
+			multi_primitive = true;
+
+			// 2 input textures
+			m_num_usable_samplers = 2;
 
 			renderpass_config.set_attachment_count(1);
 			renderpass_config.set_color_mask(0, true, true, true, true);
@@ -583,18 +567,18 @@ namespace vk
 		}
 
 		vk::image_view* upload_simple_texture(vk::render_device &dev, vk::command_buffer &cmd,
-			vk::data_heap& upload_heap, u64 key, int w, int h, bool font, bool temp, void *pixel_src, u32 owner_uid)
+			vk::data_heap& upload_heap, u64 key, u32 w, u32 h, u32 layers, bool font, bool temp, void *pixel_src, u32 owner_uid)
 		{
 			const VkFormat format = (font) ? VK_FORMAT_R8_UNORM : VK_FORMAT_B8G8R8A8_UNORM;
 			const u32 pitch = (font) ? w : w * 4;
-			const u32 data_size = pitch * h;
+			const u32 data_size = pitch * h * layers;
 			const auto offset = upload_heap.alloc<512>(data_size);
 			const auto addr = upload_heap.map(offset, data_size);
 
-			const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+			const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers };
 
 			auto tex = std::make_unique<vk::image>(dev, dev.get_memory_mapping().device_local, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				VK_IMAGE_TYPE_2D, format, std::max(w, 1), std::max(h, 1), 1, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_TYPE_2D, format, std::max(w, 1u), std::max(h, 1u), 1, 1, layers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 				0);
 
@@ -606,12 +590,12 @@ namespace vk
 			upload_heap.unmap();
 
 			VkBufferImageCopy region;
-			region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+			region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers };
 			region.bufferOffset = offset;
 			region.bufferRowLength = w;
 			region.bufferImageHeight = h;
 			region.imageOffset = {};
-			region.imageExtent = { (u32)w, (u32)h, 1u};
+			region.imageExtent = { static_cast<u32>(w), static_cast<u32>(h), 1u };
 
 			change_image_layout(cmd, tex.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, range);
 			vkCmdCopyBufferToImage(cmd, upload_heap.heap->value, tex->value, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -636,24 +620,23 @@ namespace vk
 			return result;
 		}
 
-		void create(vk::command_buffer &cmd, vk::data_heap &upload_heap)
+		void init(vk::command_buffer &cmd, vk::data_heap &upload_heap)
 		{
-			auto& dev = cmd.get_command_pool().get_owner();
-			overlay_pass::create(dev);
-
 			rsx::overlays::resource_config configuration;
 			configuration.load_files();
 
+			auto& dev = cmd.get_command_pool().get_owner();
 			u64 storage_key = 1;
+
 			for (const auto &res : configuration.texture_raw_data)
 			{
-				upload_simple_texture(dev, cmd, upload_heap, storage_key++, res->w, res->h, false, false, res->data, UINT32_MAX);
+				upload_simple_texture(dev, cmd, upload_heap, storage_key++, res->w, res->h, 1, false, false, res->data, UINT32_MAX);
 			}
 
 			configuration.free_resources();
 		}
 
-		void destroy()
+		void destroy() override
 		{
 			temp_image_cache.clear();
 			temp_view_cache.clear();
@@ -685,31 +668,50 @@ namespace vk
 
 		vk::image_view* find_font(rsx::overlays::font *font, vk::command_buffer &cmd, vk::data_heap &upload_heap)
 		{
-			u64 key = (u64)font;
+			const auto image_size = font->get_glyph_data_dimensions();
+
+			u64 key = reinterpret_cast<u64>(font);
 			auto found = view_cache.find(key);
 			if (found != view_cache.end())
-				return found->second.get();
+			{
+				if (const auto raw = found->second->image();
+					image_size.width == raw->width() &&
+					image_size.height == raw->height() &&
+					image_size.depth == raw->layers())
+				{
+					return found->second.get();
+				}
+				else
+				{
+					auto gc = vk::get_resource_manager();
+					gc->dispose(font_cache[key]);
+					gc->dispose(view_cache[key]);
+				}
+			}
 
-			//Create font file
-			return upload_simple_texture(cmd.get_command_pool().get_owner(), cmd, upload_heap, key, font->width, font->height,
-					true, false, font->glyph_data.data(), UINT32_MAX);
+			// Create font resource
+			std::vector<u8> bytes;
+			font->get_glyph_data(bytes);
+
+			return upload_simple_texture(cmd.get_command_pool().get_owner(), cmd, upload_heap, key, image_size.width, image_size.height, image_size.depth,
+					true, false, bytes.data(), UINT32_MAX);
 		}
 
 		vk::image_view* find_temp_image(rsx::overlays::image_info *desc, vk::command_buffer &cmd, vk::data_heap &upload_heap, u32 owner_uid)
 		{
-			u64 key = (u64)desc;
+			u64 key = reinterpret_cast<u64>(desc);
 			auto found = temp_view_cache.find(key);
 			if (found != temp_view_cache.end())
 				return found->second.get();
 
-			return upload_simple_texture(cmd.get_command_pool().get_owner(), cmd, upload_heap, key, desc->w, desc->h,
+			return upload_simple_texture(cmd.get_command_pool().get_owner(), cmd, upload_heap, key, desc->w, desc->h, 1,
 					false, true, desc->data, owner_uid);
 		}
 
 		void update_uniforms(vk::command_buffer& /*cmd*/, vk::glsl::program* /*program*/) override
 		{
-			m_ubo_offset = (u32)m_ubo.alloc<256>(128);
-			auto dst = (f32*)m_ubo.map(m_ubo_offset, 128);
+			m_ubo_offset = static_cast<u32>(m_ubo.alloc<256>(128));
+			auto dst = static_cast<f32*>(m_ubo.map(m_ubo_offset, 128));
 
 			// regs[0] = scaling parameters
 			dst[0] = m_scale_offset.r;
@@ -726,7 +728,7 @@ namespace vk
 			// regs[2] = fs config parameters
 			dst[8] = m_time;
 			dst[9] = m_pulse_glow? 1.f : 0.f;
-			dst[10] = m_skip_texture_read? 0.f : (f32)m_texture_type;
+			dst[10] = m_skip_texture_read? 0.f : static_cast<f32>(m_texture_type);
 			dst[11] = m_clip_enabled ? 1.f : 0.f;
 
 			// regs[3] = clip rect
@@ -738,49 +740,86 @@ namespace vk
 			// regs[4] = fs config parameters 2
 			dst[16] = m_blur_strength;
 
-			// regs[5] = viewport size
-			dst[20] = m_viewport_size.width;
-			dst[21] = m_viewport_size.height;
+			// regs[5] = viewport
+			dst[20] = m_viewport.width;
+			dst[21] = m_viewport.height;
+			dst[22] = m_viewport.x;
+			dst[23] = m_viewport.y;
 
 			m_ubo.unmap();
 		}
 
+		void set_primitive_type(rsx::overlays::primitive_type type)
+		{
+			m_current_primitive_type = type;
+
+			switch (type)
+			{
+				case rsx::overlays::primitive_type::quad_list:
+				case rsx::overlays::primitive_type::triangle_strip:
+					renderpass_config.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+					break;
+				case rsx::overlays::primitive_type::line_list:
+					renderpass_config.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
+					break;
+				case rsx::overlays::primitive_type::line_strip:
+					renderpass_config.set_primitive_type(VK_PRIMITIVE_TOPOLOGY_LINE_STRIP);
+					break;
+				default:
+					fmt::throw_exception("Unexpected primitive type %d" HERE, static_cast<s32>(type));
+			}
+		}
+
 		void emit_geometry(vk::command_buffer &cmd) override
 		{
-			//Split into groups of 4
-			u32 first = 0;
-			u32 num_quads = num_drawable_elements / 4;
-
-			for (u32 n = 0; n < num_quads; ++n)
+			if (m_current_primitive_type == rsx::overlays::primitive_type::quad_list)
 			{
-				vkCmdDraw(cmd, 4, 1, first, 0);
-				first += 4;
+				// Emulate quads with disjointed triangle strips
+				u32 first = 0;
+				u32 num_quads = num_drawable_elements / 4;
+
+				for (u32 n = 0; n < num_quads; ++n)
+				{
+					vkCmdDraw(cmd, 4, 1, first, 0);
+					first += 4;
+				}
+			}
+			else
+			{
+				overlay_pass::emit_geometry(cmd);
 			}
 		}
 
 		void run(vk::command_buffer &cmd, const areau& viewport, vk::framebuffer* target, VkRenderPass render_pass,
 				vk::data_heap &upload_heap, rsx::overlays::overlay &ui)
 		{
-			m_scale_offset = color4f((f32)ui.virtual_width, (f32)ui.virtual_height, 1.f, 1.f);
-			m_time = (f32)(get_system_time() / 1000) * 0.005f;
-			m_viewport_size = { f32(viewport.width()), f32(viewport.height()) };
+			m_scale_offset = color4f(ui.virtual_width, ui.virtual_height, 1.f, 1.f);
+			m_time = static_cast<f32>(get_system_time() / 1000) * 0.005f;
+			m_viewport = { { static_cast<f32>(viewport.x1), static_cast<f32>(viewport.y1) }, { static_cast<f32>(viewport.width()), static_cast<f32>(viewport.height()) } };
+
+			std::vector<vk::image_view*> image_views
+			{
+				vk::null_image_view(cmd, VK_IMAGE_VIEW_TYPE_2D),
+				vk::null_image_view(cmd, VK_IMAGE_VIEW_TYPE_2D_ARRAY)
+			};
 
 			for (auto &command : ui.get_compiled().draw_commands)
 			{
-				num_drawable_elements = (u32)command.verts.size();
+				num_drawable_elements = static_cast<u32>(command.verts.size());
 				const u32 value_count = num_drawable_elements * 4;
 
-				upload_vertex_data((f32*)command.verts.data(), value_count);
+				upload_vertex_data(reinterpret_cast<f32*>(command.verts.data()), value_count);
+				set_primitive_type(command.config.primitives);
 
 				m_skip_texture_read = false;
 				m_color = command.config.color;
 				m_pulse_glow = command.config.pulse_glow;
-				m_blur_strength = f32(command.config.blur_strength) * 0.01f;
+				m_blur_strength = static_cast<f32>(command.config.blur_strength) * 0.01f;
 				m_clip_enabled = command.config.clip_region;
 				m_clip_region = command.config.clip_rect;
 				m_texture_type = 1;
 
-				auto src = vk::null_image_view(cmd);
+				vk::image_view* src = nullptr;
 				switch (command.config.texture_ref)
 				{
 				case rsx::overlays::image_resource_id::game_icon:
@@ -790,18 +829,24 @@ namespace vk
 					m_skip_texture_read = true;
 					break;
 				case rsx::overlays::image_resource_id::font_file:
-					m_texture_type = 2;
 					src = find_font(command.config.font_ref, cmd, upload_heap);
+					m_texture_type = src->image()->layers() == 1 ? 2 : 3;
 					break;
 				case rsx::overlays::image_resource_id::raw_image:
-					src = find_temp_image((rsx::overlays::image_info*)command.config.external_data_ref, cmd, upload_heap, ui.uid);
+					src = find_temp_image(static_cast<rsx::overlays::image_info*>(command.config.external_data_ref), cmd, upload_heap, ui.uid);
 					break;
 				default:
 					src = view_cache[command.config.texture_ref].get();
 					break;
 				}
 
-				overlay_pass::run(cmd, viewport, target, { src }, render_pass);
+				if (src)
+				{
+					const int res_id = src->image()->layers() > 1 ? 1 : 0;
+					image_views[res_id] = src;
+				}
+
+				overlay_pass::run(cmd, viewport, target, image_views, render_pass);
 			}
 
 			ui.update();
@@ -882,10 +927,10 @@ namespace vk
 		void set_up_viewport(vk::command_buffer &cmd, u32 x, u32 y, u32 w, u32 h) override
 		{
 			VkViewport vp{};
-			vp.x = (f32)x;
-			vp.y = (f32)y;
-			vp.width = (f32)w;
-			vp.height = (f32)h;
+			vp.x = static_cast<f32>(x);
+			vp.y = static_cast<f32>(y);
+			vp.width = static_cast<f32>(w);
+			vp.height = static_cast<f32>(h);
 			vp.minDepth = 0.f;
 			vp.maxDepth = 1.f;
 			vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -923,4 +968,214 @@ namespace vk
 				target->get_view(0xAAE4, rsx::default_remap_vector), render_pass);
 		}
 	};
+
+	struct stencil_clear_pass : public overlay_pass
+	{
+		VkRect2D region = {};
+
+		stencil_clear_pass()
+		{
+			vs_src =
+				"#version 450\n"
+				"#extension GL_ARB_separate_shader_objects : enable\n"
+				"\n"
+				"void main()\n"
+				"{\n"
+				"	vec2 positions[] = {vec2(-1., -1.), vec2(1., -1.), vec2(-1., 1.), vec2(1., 1.)};\n"
+				"	gl_Position = vec4(positions[gl_VertexIndex % 4], 0., 1.);\n"
+				"}\n";
+
+			fs_src =
+				"#version 420\n"
+				"#extension GL_ARB_separate_shader_objects : enable\n"
+				"layout(location=0) out vec4 out_color;\n"
+				"\n"
+				"void main()\n"
+				"{\n"
+				"	out_color = vec4(0.);\n"
+				"}\n";
+		}
+
+		void set_up_viewport(vk::command_buffer& cmd, u32 x, u32 y, u32 w, u32 h) override
+		{
+			VkViewport vp{};
+			vp.x = static_cast<f32>(x);
+			vp.y = static_cast<f32>(y);
+			vp.width = static_cast<f32>(w);
+			vp.height = static_cast<f32>(h);
+			vp.minDepth = 0.f;
+			vp.maxDepth = 1.f;
+			vkCmdSetViewport(cmd, 0, 1, &vp);
+
+			vkCmdSetScissor(cmd, 0, 1, &region);
+		}
+
+		void run(vk::command_buffer& cmd, vk::render_target* target, VkRect2D rect, uint32_t stencil_clear, uint32_t stencil_write_mask, VkRenderPass render_pass)
+		{
+			region = rect;
+
+			// Stencil setup. Replace all pixels in the scissor region with stencil_clear with the correct write mask.
+			renderpass_config.enable_stencil_test(
+				VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE,  // Always replace
+				VK_COMPARE_OP_ALWAYS,                                                 // Always pass
+				0xFF,                                                                 // Full write-through
+				stencil_clear);                                                       // Write active bit
+
+			renderpass_config.set_stencil_mask(stencil_write_mask);
+			renderpass_config.set_depth_mask(false);
+
+			// Coverage sampling disabled, but actually report correct number of samples
+			renderpass_config.set_multisample_state(target->samples(), 0xFFFF, false, false, false);
+
+			overlay_pass::run(cmd, { 0, 0, target->width(), target->height() }, target,
+				target->get_view(0xAAE4, rsx::default_remap_vector), render_pass);
+		}
+	};
+
+	struct video_out_calibration_pass : public overlay_pass
+	{
+		union config_t
+		{
+			struct
+			{
+				float gamma;
+				int   limit_range;
+				int   stereo;
+				int   stereo_image_count;
+			};
+
+			float data[4];
+		}
+		config;
+
+		video_out_calibration_pass()
+		{
+			vs_src =
+				"#version 450\n\n"
+				"layout(location=0) out vec2 tc0;\n"
+				"\n"
+				"void main()\n"
+				"{\n"
+				"	vec2 positions[] = {vec2(-1., -1.), vec2(1., -1.), vec2(-1., 1.), vec2(1., 1.)};\n"
+				"	vec2 coords[] = {vec2(0., 0.), vec2(1., 0.), vec2(0., 1.), vec2(1., 1.)};\n"
+				"	tc0 = coords[gl_VertexIndex % 4];\n"
+				"	vec2 pos = positions[gl_VertexIndex % 4];\n"
+				"	gl_Position = vec4(pos, 0., 1.);\n"
+				"}\n";
+
+			fs_src =
+				"#version 420\n\n"
+				"layout(set=0, binding=1) uniform sampler2D fs0;\n"
+				"layout(set=0, binding=2) uniform sampler2D fs1;\n"
+				"layout(location=0) in vec2 tc0;\n"
+				"layout(location=0) out vec4 ocol;\n"
+				"\n"
+				"layout(push_constant) uniform static_data\n"
+				"{\n"
+				"	float gamma;\n"
+				"	int limit_range;\n"
+				"	int stereo;\n"
+				"	int stereo_image_count;\n"
+				"};\n"
+				"\n"
+				"vec4 read_source()\n"
+				"{\n"
+				"	if (stereo == 0) return texture(fs0, tc0);\n"
+				"\n"
+				"	vec4 left, right;\n"
+				"	if (stereo_image_count == 2)\n"
+				"	{\n"
+				"		left = texture(fs0, tc0);\n"
+				"		right = texture(fs1, tc0);\n"
+				"	}\n"
+				"	else\n"
+				"	{\n"
+				"		vec2 coord_left = tc0 * vec2(1.f, 0.4898f);\n"
+				"		vec2 coord_right = coord_left + vec2(0.f, 0.510204f);\n"
+				"		left = texture(fs0, coord_left);\n"
+				"		right = texture(fs0, coord_right);\n"
+				"	}\n"
+				"\n"
+				"	return vec4(left.r, right.g, right.b, 1.);\n"
+				"}\n"
+				"\n"
+				"void main()\n"
+				"{\n"
+				"	vec4 color = read_source();\n"
+				"	color.rgb = pow(color.rgb, vec3(gamma));\n"
+				"	if (limit_range > 0)\n"
+				"		ocol = ((color * 220.) + 16.) / 255.;\n"
+				"	else\n"
+				"		ocol = color;\n"
+				"}\n";
+
+			renderpass_config.set_depth_mask(false);
+			renderpass_config.set_color_mask(0, true, true, true, true);
+			renderpass_config.set_attachment_count(1);
+
+			m_num_usable_samplers = 2;
+		}
+
+		std::vector<VkPushConstantRange> get_push_constants() override
+		{
+			VkPushConstantRange constant;
+			constant.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+			constant.offset = 0;
+			constant.size = 16;
+
+			return { constant };
+		}
+
+		void update_uniforms(vk::command_buffer& cmd, vk::glsl::program* /*program*/) override
+		{
+			vkCmdPushConstants(cmd, m_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, config.data);
+		}
+
+		void run(vk::command_buffer &cmd, const areau& viewport, vk::framebuffer* target,
+			const rsx::simple_array<vk::viewable_image*>& src,
+			f32 gamma, bool limited_rgb, bool _3d, VkRenderPass render_pass)
+		{
+			config.gamma = gamma;
+			config.limit_range = limited_rgb? 1 : 0;
+			config.stereo = _3d? 1 : 0;
+			config.stereo_image_count = std::min(::size32(src), 2u);
+
+			std::vector<vk::image_view*> views;
+			views.reserve(2);
+
+			for (auto& img : src)
+			{
+				// Only raw uploads can possibly have mismatched layout here
+				img->change_layout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				views.push_back(img->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector));
+			}
+
+			if (views.size() < 2)
+			{
+				views.push_back(vk::null_image_view(cmd, VK_IMAGE_VIEW_TYPE_2D));
+			}
+
+			overlay_pass::run(cmd, viewport, target, views, render_pass);
+		}
+	};
+
+	// TODO: Replace with a proper manager
+	extern std::unordered_map<u32, std::unique_ptr<vk::overlay_pass>> g_overlay_passes;
+
+	template<class T>
+	T* get_overlay_pass()
+	{
+		u32 index = id_manager::typeinfo::get_index<T>();
+		auto& e = g_overlay_passes[index];
+
+		if (!e)
+		{
+			e = std::make_unique<T>();
+			e->create(*vk::get_current_renderer());
+		}
+
+		return static_cast<T*>(e.get());
+	}
+
+	void reset_overlay_passes();
 }

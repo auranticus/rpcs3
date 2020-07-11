@@ -1,9 +1,22 @@
 #pragma once
 
+// Include asmjit with warnings ignored
 #define ASMJIT_EMBED
 #define ASMJIT_DEBUG
 
+#ifdef _MSC_VER
+#pragma warning(push, 0)
 #include <asmjit/asmjit.h>
+#pragma warning(pop)
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#include <asmjit/asmjit.h>
+#pragma GCC diagnostic pop
+#endif
+
 #include <array>
 #include <functional>
 
@@ -100,12 +113,19 @@ FT build_function_asm(F&& builder)
 #include "restore_new.h"
 #ifdef _MSC_VER
 #pragma warning(push, 0)
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wall"
+#pragma GCC diagnostic ignored "-Wextra"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #ifdef _MSC_VER
 #pragma warning(pop)
+#else
+#pragma GCC diagnostic pop
 #endif
 #include "define_new_memleakdetect.h"
 
@@ -143,13 +163,16 @@ public:
 	}
 
 	// Add module (path to obj cache dir)
-	void add(std::unique_ptr<llvm::Module> module, const std::string& path);
+	void add(std::unique_ptr<llvm::Module> _module, const std::string& path);
 
 	// Add module (not cached)
-	void add(std::unique_ptr<llvm::Module> module);
+	void add(std::unique_ptr<llvm::Module> _module);
 
 	// Add object (path to obj file)
 	void add(const std::string& path);
+
+	// Check object file
+	static bool check(const std::string& path);
 
 	// Finalize
 	void fin();

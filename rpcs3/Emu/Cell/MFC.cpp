@@ -1,11 +1,5 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "MFC.h"
-
-#include "Utilities/sysinfo.h"
-#include "Emu/Memory/vm.h"
-#include "Emu/Cell/SPUThread.h"
-#include "Emu/Cell/lv2/sys_sync.h"
-#include "Emu/System.h"
 
 template <>
 void fmt_class_string<MFC>::format(std::string& out, u64 arg)
@@ -51,6 +45,12 @@ void fmt_class_string<MFC>::format(std::string& out, u64 arg)
 		case MFC_EIEIO_CMD: return "EIEIO";
 		case MFC_SYNC_CMD: return "SYNC";
 
+		case MFC_SDCRT_CMD: return "SDCRT";
+		case MFC_SDCRTST_CMD: return "SDCRTST";
+		case MFC_SDCRZ_CMD: return "SDCRZ";
+		case MFC_SDCRS_CMD: return "SDCRS";
+		case MFC_SDCRF_CMD: return "SDCRF";
+
 		case MFC_BARRIER_MASK:
 		case MFC_FENCE_MASK:
 		case MFC_LIST_MASK:
@@ -68,5 +68,7 @@ void fmt_class_string<spu_mfc_cmd>::format(std::string& out, u64 arg)
 {
 	const auto& cmd = get_object(arg);
 
-	fmt::append(out, "%s #%02u 0x%05x:0x%08x 0x%x", cmd.cmd, cmd.tag, cmd.lsa, cmd.eah * 0x100000000ull + cmd.eal, cmd.size);
+	const u8 tag = cmd.tag;
+
+	fmt::append(out, "%s #%02u 0x%05x:0x%08llx 0x%x%s", cmd.cmd, tag & 0x7f, cmd.lsa, u64{cmd.eah} << 32 | cmd.eal, cmd.size, (tag & 0x80) ? " (stalled)" : "");
 }

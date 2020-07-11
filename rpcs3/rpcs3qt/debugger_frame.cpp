@@ -1,5 +1,21 @@
-#include "debugger_frame.h"
+﻿#include "debugger_frame.h"
+#include "register_editor_dialog.h"
+#include "instruction_editor_dialog.h"
+#include "gui_settings.h"
+#include "debugger_list.h"
+#include "breakpoint_list.h"
+#include "breakpoint_handler.h"
+#include "call_stack_list.h"
 #include "qt_utils.h"
+
+#include "Emu/System.h"
+#include "Emu/IdManager.h"
+#include "Emu/Cell/PPUDisAsm.h"
+#include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUDisAsm.h"
+#include "Emu/Cell/SPUThread.h"
+#include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/CPUDisAsm.h"
 
 #include <QKeyEvent>
 #include <QScrollBar>
@@ -7,10 +23,11 @@
 #include <QFontDatabase>
 #include <QCompleter>
 #include <QMenu>
-#include <QJSEngine>
+#include <QVBoxLayout>
+#include <QTimer>
+#include <atomic>
 
 constexpr auto qstr = QString::fromStdString;
-extern bool user_asked_for_frame_capture;
 
 debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *parent)
 	: custom_dock_widget(tr("Debugger"), parent), xgui_settings(settings)
@@ -31,10 +48,12 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 	hbox_b_main->setContentsMargins(0, 0, 0, 0);
 
 	m_breakpoint_handler = new breakpoint_handler();
+	m_breakpoint_list = new breakpoint_list(this, m_breakpoint_handler);
+
 	m_debugger_list = new debugger_list(this, settings, m_breakpoint_handler);
 	m_debugger_list->installEventFilter(this);
 
-	m_breakpoint_list = new breakpoint_list(this, m_breakpoint_handler);
+	m_call_stack_list = new call_stack_list(this);
 
 	m_choice_units = new QComboBox(this);
 	m_choice_units->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -42,14 +61,13 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 	m_choice_units->setMaximumWidth(500);
 	m_choice_units->setEditable(true);
 	m_choice_units->setInsertPolicy(QComboBox::NoInsert);
-	m_choice_units->lineEdit()->setPlaceholderText("Choose a thread");
+	m_choice_units->lineEdit()->setPlaceholderText(tr("Choose a thread"));
 	m_choice_units->completer()->setCompletionMode(QCompleter::PopupCompletion);
 	m_choice_units->completer()->setMaxVisibleItems(30);
 	m_choice_units->completer()->setFilterMode(Qt::MatchContains);
 
 	m_go_to_addr = new QPushButton(tr("Go To Address"), this);
 	m_go_to_pc = new QPushButton(tr("Go To PC"), this);
-	m_btn_capture = new QPushButton(tr("RSX Capture"), this);
 	m_btn_step = new QPushButton(tr("Step"), this);
 	m_btn_step_over = new QPushButton(tr("Step Over"), this);
 	m_btn_run = new QPushButton(RunString, this);
@@ -60,26 +78,39 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 
 	hbox_b_main->addWidget(m_go_to_addr);
 	hbox_b_main->addWidget(m_go_to_pc);
-	hbox_b_main->addWidget(m_btn_capture);
 	hbox_b_main->addWidget(m_btn_step);
 	hbox_b_main->addWidget(m_btn_step_over);
 	hbox_b_main->addWidget(m_btn_run);
 	hbox_b_main->addWidget(m_choice_units);
 	hbox_b_main->addStretch();
 
-	//Registers
+	// Misc state
+	m_misc_state = new QTextEdit(this);
+	m_misc_state->setLineWrapMode(QTextEdit::NoWrap);
+	m_misc_state->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+
+	// Registers
 	m_regs = new QTextEdit(this);
 	m_regs->setLineWrapMode(QTextEdit::NoWrap);
 	m_regs->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
 
 	m_debugger_list->setFont(m_mono);
+	m_misc_state->setFont(m_mono);
 	m_regs->setFont(m_mono);
+	m_call_stack_list->setFont(m_mono);
 
 	m_right_splitter = new QSplitter(this);
 	m_right_splitter->setOrientation(Qt::Vertical);
+	m_right_splitter->addWidget(m_misc_state);
 	m_right_splitter->addWidget(m_regs);
+	m_right_splitter->addWidget(m_call_stack_list);
 	m_right_splitter->addWidget(m_breakpoint_list);
-	m_right_splitter->setStretchFactor(0, 1);
+
+	// Set relative sizes for widgets
+	m_right_splitter->setStretchFactor(0, 2); // misc state
+	m_right_splitter->setStretchFactor(1, 8); // registers
+	m_right_splitter->setStretchFactor(2, 3); // call stack
+	m_right_splitter->setStretchFactor(3, 1); // breakpoint list
 
 	m_splitter = new QSplitter(this);
 	m_splitter->addWidget(m_debugger_list);
@@ -98,15 +129,10 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 	connect(m_go_to_addr, &QAbstractButton::clicked, this, &debugger_frame::ShowGotoAddressDialog);
 	connect(m_go_to_pc, &QAbstractButton::clicked, this, &debugger_frame::ShowPC);
 
-	connect(m_btn_capture, &QAbstractButton::clicked, [=]()
-	{
-		user_asked_for_frame_capture = true;
-	});
-
 	connect(m_btn_step, &QAbstractButton::clicked, this, &debugger_frame::DoStep);
-	connect(m_btn_step_over, &QAbstractButton::clicked, [=]() { DoStep(true); });
+	connect(m_btn_step_over, &QAbstractButton::clicked, [this]() { DoStep(true); });
 
-	connect(m_btn_run, &QAbstractButton::clicked, [=]()
+	connect(m_btn_run, &QAbstractButton::clicked, [this]()
 	{
 		if (const auto cpu = this->cpu.lock())
 		{
@@ -136,6 +162,9 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 
 	connect(m_debugger_list, &debugger_list::BreakpointRequested, m_breakpoint_list, &breakpoint_list::HandleBreakpointRequest);
 	connect(m_breakpoint_list, &breakpoint_list::RequestShowAddress, m_debugger_list, &debugger_list::ShowAddress);
+
+	connect(this, &debugger_frame::CallStackUpdateRequested, m_call_stack_list, &call_stack_list::HandleUpdate);
+	connect(m_call_stack_list, &call_stack_list::RequestShowAddress, m_debugger_list, &debugger_list::ShowAddress);
 
 	m_debugger_list->ShowAddress(m_debugger_list->m_pc);
 	UpdateUnitList();
@@ -270,7 +299,7 @@ void debugger_frame::UpdateUI()
 
 	if (!cpu)
 	{
-		if (m_last_pc != -1 || m_last_stat)
+		if (m_last_pc != umax || m_last_stat)
 		{
 			m_last_pc = -1;
 			m_last_stat = 0;
@@ -331,7 +360,7 @@ void debugger_frame::UpdateUnitList()
 
 	const auto on_select = [&](u32, cpu_thread& cpu)
 	{
-		QVariant var_cpu = qVariantFromValue((void *)&cpu);
+		QVariant var_cpu = QVariant::fromValue<void*>(&cpu);
 		m_choice_units->addItem(qstr(cpu.get_name()), var_cpu);
 		if (old_cpu == var_cpu) m_choice_units->setCurrentIndex(m_choice_units->count() - 1);
 	};
@@ -363,7 +392,7 @@ void debugger_frame::OnSelectUnit()
 	{
 		const auto on_select = [&](u32, cpu_thread& cpu)
 		{
-			cpu_thread* data = (cpu_thread *)m_choice_units->currentData().value<void *>();
+			cpu_thread* data = static_cast<cpu_thread*>(m_choice_units->currentData().value<void*>());
 			return data == &cpu;
 		};
 
@@ -383,6 +412,7 @@ void debugger_frame::OnSelectUnit()
 
 	m_debugger_list->UpdateCPUData(this->cpu, m_disasm);
 	m_breakpoint_list->UpdateCPUData(this->cpu, m_disasm);
+	m_call_stack_list->UpdateCPUData(this->cpu, m_disasm);
 	DoUpdate();
 	UpdateUI();
 }
@@ -390,30 +420,40 @@ void debugger_frame::OnSelectUnit()
 void debugger_frame::DoUpdate()
 {
 	// Check if we need to disable a step over bp
-	if (m_last_step_over_breakpoint != -1 && GetPc() == m_last_step_over_breakpoint)
+	if (m_last_step_over_breakpoint != umax && GetPc() == m_last_step_over_breakpoint)
 	{
 		m_breakpoint_handler->RemoveBreakpoint(m_last_step_over_breakpoint);
 		m_last_step_over_breakpoint = -1;
 	}
 
 	ShowPC();
-	WriteRegs();
+	WritePanels();
 }
 
-void debugger_frame::WriteRegs()
+void debugger_frame::WritePanels()
 {
 	const auto cpu = this->cpu.lock();
 
 	if (!cpu)
 	{
+		m_misc_state->clear();
 		m_regs->clear();
 		return;
 	}
 
-	int loc = m_regs->verticalScrollBar()->value();
+	int loc;
+
+	loc = m_regs->verticalScrollBar()->value();
+	m_misc_state->clear();
+	m_misc_state->setText(qstr(cpu->dump_misc()));
+	m_misc_state->verticalScrollBar()->setValue(loc);
+
+	loc = m_regs->verticalScrollBar()->value();
 	m_regs->clear();
-	m_regs->setText(qstr(cpu->dump()));
+	m_regs->setText(qstr(cpu->dump_regs()));
 	m_regs->verticalScrollBar()->setValue(loc);
+
+	Q_EMIT CallStackUpdateRequested(cpu->dump_callstack_list());
 }
 
 void debugger_frame::ShowGotoAddressDialog()
@@ -516,46 +556,19 @@ u64 debugger_frame::EvaluateExpression(const QString& expression)
 
 	if (!thread) return 0;
 
-	// Parse expression
-	QJSEngine scriptEngine;
-	scriptEngine.globalObject().setProperty("pc", GetPc());
-
-	if (thread->id_type() == 1)
-	{
-		auto ppu = static_cast<ppu_thread*>(thread.get());
-
-		for (int i = 0; i < 32; ++i)
-		{
-			scriptEngine.globalObject().setProperty(QString("r%1hi").arg(i), QJSValue((u32)(ppu->gpr[i] >> 32)));
-			scriptEngine.globalObject().setProperty(QString("r%1").arg(i), QJSValue((u32)(ppu->gpr[i])));
-		}
-
-		scriptEngine.globalObject().setProperty("lrhi", QJSValue((u32)(ppu->lr >> 32 )));
-		scriptEngine.globalObject().setProperty("lr", QJSValue((u32)(ppu->lr)));
-		scriptEngine.globalObject().setProperty("ctrhi", QJSValue((u32)(ppu->ctr >> 32)));
-		scriptEngine.globalObject().setProperty("ctr", QJSValue((u32)(ppu->ctr)));
-		scriptEngine.globalObject().setProperty("cia", QJSValue(ppu->cia));
-	}
-	else
-	{
-		auto spu = static_cast<spu_thread*>(thread.get());
-
-		for (int i = 0; i < 128; ++i)
-		{
-			scriptEngine.globalObject().setProperty(QString("r%1hi").arg(i), QJSValue(spu->gpr[i]._u32[0]));
-			scriptEngine.globalObject().setProperty(QString("r%1lo").arg(i), QJSValue(spu->gpr[i]._u32[1]));
-			scriptEngine.globalObject().setProperty(QString("r%1hilo").arg(i), QJSValue(spu->gpr[i]._u32[2]));
-			scriptEngine.globalObject().setProperty(QString("r%1hihi").arg(i), QJSValue(spu->gpr[i]._u32[3]));
-		}
-	}
-
+	// Parse expression(or at least used to, was nuked to remove the need for QtJsEngine)
 	const QString fixed_expression = QRegExp("^[A-Fa-f0-9]+$").exactMatch(expression) ? "0x" + expression : expression;
-	return static_cast<ulong>(scriptEngine.evaluate(fixed_expression).toNumber());
+	return static_cast<ulong>(fixed_expression.toULong(nullptr, 0));
 }
 
 void debugger_frame::ClearBreakpoints()
 {
 	m_breakpoint_list->ClearBreakpoints();
+}
+
+void debugger_frame::ClearCallStack()
+{
+	Q_EMIT CallStackUpdateRequested({});
 }
 
 void debugger_frame::ShowPC()
@@ -587,7 +600,7 @@ void debugger_frame::DoStep(bool stepOver)
 
 				// Undefine previous step over breakpoint if it hasnt been already
 				// This can happen when the user steps over a branch that doesn't return to itself
-				if (m_last_step_over_breakpoint != -1)
+				if (m_last_step_over_breakpoint != umax)
 				{
 					m_breakpoint_handler->RemoveBreakpoint(next_instruction_pc);
 				}

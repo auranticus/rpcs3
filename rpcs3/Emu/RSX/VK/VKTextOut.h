@@ -2,6 +2,7 @@
 #include "VKHelpers.h"
 #include "VKVertexProgram.h"
 #include "VKFragmentProgram.h"
+#include "VKRenderPass.h"
 #include "../Common/TextGlyphs.h"
 
 namespace vk
@@ -11,7 +12,7 @@ namespace vk
 	private:
 		std::unique_ptr<vk::buffer> m_vertex_buffer;
 		std::unique_ptr<vk::buffer> m_uniforms_buffer;
-		
+
 		std::unique_ptr<vk::glsl::program> m_program;
 		vk::glsl::shader m_vertex_shader;
 		vk::glsl::shader m_fragment_shader;
@@ -42,7 +43,7 @@ namespace vk
 			m_descriptor_pool.create(dev, descriptor_pools, 1, 120, 2);
 
 			VkDescriptorSetLayoutBinding bindings[1] = {};
-			
+
 			//Scale and offset data plus output color
 			bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			bindings[0].descriptorCount = 1;
@@ -119,16 +120,17 @@ namespace vk
 			shader_stages[1].module = m_fragment_shader.get_handle();
 			shader_stages[1].pName = "main";
 
-			VkDynamicState dynamic_state_descriptors[VK_DYNAMIC_STATE_RANGE_SIZE] = {};
+			std::vector<VkDynamicState> dynamic_state_descriptors;
 			VkPipelineDynamicStateCreateInfo dynamic_state_info = {};
 			dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-			dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_VIEWPORT;
-			dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_SCISSOR;
-			dynamic_state_info.pDynamicStates = dynamic_state_descriptors;
+			dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+			dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_SCISSOR);
+			dynamic_state_info.pDynamicStates = dynamic_state_descriptors.data();
+			dynamic_state_info.dynamicStateCount = ::size32(dynamic_state_descriptors);
 
 			VkVertexInputAttributeDescription vdesc;
 			VkVertexInputBindingDescription vbind;
-			
+
 			vdesc.binding = 0;
 			vdesc.format = VK_FORMAT_R32G32_SFLOAT;
 			vdesc.location = 0;
@@ -195,7 +197,7 @@ namespace vk
 			CHECK_RESULT(vkCreateGraphicsPipelines(dev, nullptr, 1, &info, NULL, &pipeline));
 
 			const std::vector<vk::glsl::program_input> unused;
-			m_program = std::make_unique<vk::glsl::program>((VkDevice)dev, pipeline, unused, unused);
+			m_program = std::make_unique<vk::glsl::program>(static_cast<VkDevice>(dev), pipeline, m_pipeline_layout, unused, unused);
 		}
 
 		void load_program(vk::command_buffer &cmd, float scale_x, float scale_y, const float *offsets, size_t nb_offsets, std::array<float, 4> color)
@@ -213,7 +215,7 @@ namespace vk
 
 			float scale[] = { scale_x, scale_y };
 			float colors[] = { color[0], color[1], color[2], color[3] };
-			float *dst = (float*)m_uniforms_buffer->map(m_uniform_buffer_offset, 8192);
+			float* dst = static_cast<float*>(m_uniforms_buffer->map(m_uniform_buffer_offset, 8192));
 
 			//std140 spec demands that arrays be multiples of 16 bytes
 			for (size_t i = 0; i < nb_offsets; ++i)
@@ -232,7 +234,7 @@ namespace vk
 
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_program->pipeline);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, nullptr);
-			
+
 			VkDeviceSize zero = 0;
 			vkCmdBindVertexBuffers(cmd, 0, 1, &m_vertex_buffer->value, &zero);
 		}
@@ -264,15 +266,15 @@ namespace vk
 
 			m_render_pass = render_pass;
 			m_uniform_buffer_size = 983040;
-			
+
 			init_descriptor_set(dev);
 			init_program(dev);
 
 			GlyphManager glyph_source;
 			auto points = glyph_source.generate_point_map();
 			const size_t buffer_size = points.size() * sizeof(GlyphManager::glyph_point);
-			
-			u8 *dst = (u8*)m_vertex_buffer->map(0, buffer_size);
+
+			u8* dst = static_cast<u8*>(m_vertex_buffer->map(0, buffer_size));
 			memcpy(dst, points.data(), buffer_size);
 			m_vertex_buffer->unmap();
 
@@ -302,7 +304,7 @@ namespace vk
 
 			while (*s)
 			{
-				u8 offset = (u8)*s;
+				u8 offset = static_cast<u8>(*s);
 				bool to_draw = false;	//Can be false for space or unsupported characters
 
 				auto o = m_offsets.find(offset);
@@ -334,8 +336,8 @@ namespace vk
 			}
 
 			VkViewport vp{};
-			vp.width = (f32)target_w;
-			vp.height = (f32)target_h;
+			vp.width = static_cast<f32>(target_w);
+			vp.height = static_cast<f32>(target_h);
 			vp.minDepth = 0.f;
 			vp.maxDepth = 1.f;
 			vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -346,23 +348,13 @@ namespace vk
 			//TODO: Add drop shadow if deemed necessary for visibility
 			load_program(cmd, scale_x, scale_y, shader_offsets.data(), counts.size(), color);
 
-			VkRenderPassBeginInfo rp_begin = {};
-			rp_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			rp_begin.renderPass = m_render_pass;
-			rp_begin.framebuffer = target.value;
-			rp_begin.renderArea.offset.x = 0;
-			rp_begin.renderArea.offset.y = 0;
-			rp_begin.renderArea.extent.width = target.width();
-			rp_begin.renderArea.extent.height = target.height();
+			const coordu viewport = { positionu{0u, 0u}, sizeu{target.width(), target.height() } };
+			vk::begin_renderpass(cmd, m_render_pass, target.value, viewport);
 
-			vkCmdBeginRenderPass(cmd, &rp_begin, VK_SUBPASS_CONTENTS_INLINE);
-
-			for (int i = 0; i < counts.size(); ++i)
+			for (uint i = 0; i < counts.size(); ++i)
 			{
 				vkCmdDraw(cmd, counts[i], 1, offsets[i], i);
 			}
-
-			vkCmdEndRenderPass(cmd);
 		}
 
 		void reset_descriptors()

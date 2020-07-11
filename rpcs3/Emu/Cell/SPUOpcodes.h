@@ -13,6 +13,7 @@ union spu_opcode_t
 	bf_t<u32, 21, 7> rt4; // 4..10, for 4-op instructions
 	bf_t<u32, 18, 1> e; // 13, "enable interrupts" bit
 	bf_t<u32, 19, 1> d; // 12, "disable interrupts" bit
+	bf_t<u32, 18, 2> de; // 12..13 combined 'e' and 'd' bits
 	bf_t<u32, 20, 1> c; // 11, "C" bit for SYNC instruction
 	bf_t<s32, 23, 2> r0h; // 7..8, signed
 	bf_t<s32, 14, 2> roh; // 16..17, signed
@@ -45,7 +46,7 @@ template <typename D, typename T = decltype(&D::UNK)>
 class spu_decoder
 {
 	// Fast lookup table
-	std::array<T, 2048> m_table;
+	std::array<T, 2048> m_table{};
 
 	struct instruction_info
 	{
@@ -53,14 +54,14 @@ class spu_decoder
 		u32 value;
 		T pointer;
 
-		instruction_info(u32 m, u32 v, T p)
+		constexpr instruction_info(u32 m, u32 v, T p)
 			: magn(m)
 			, value(v)
 			, pointer(p)
 		{
 		}
 
-		instruction_info(u32 m, u32 v, const T* p)
+		constexpr instruction_info(u32 m, u32 v, const T* p)
 			: magn(m)
 			, value(v)
 			, pointer(*p)
@@ -69,7 +70,7 @@ class spu_decoder
 	};
 
 public:
-	spu_decoder()
+	constexpr spu_decoder()
 	{
 		const std::initializer_list<instruction_info> instructions
 		{
@@ -274,7 +275,10 @@ public:
 			{ 7, 0xf, &D::FMS },
 		};
 
-		m_table.fill(&D::UNK);
+		for (auto& x : m_table)
+		{
+			x = &D::UNK;
+		}
 
 		for (auto& entry : instructions)
 		{
@@ -283,12 +287,6 @@ public:
 				m_table[entry.value << entry.magn | i] = entry.pointer;
 			}
 		}
-	}
-
-	template <typename F>
-	spu_decoder(F&& init) : spu_decoder()
-	{
-		init(m_table);
 	}
 
 	const std::array<T, 2048>& get_table() const

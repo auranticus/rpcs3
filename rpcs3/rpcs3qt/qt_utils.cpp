@@ -1,10 +1,12 @@
-﻿
-#include "qt_utils.h"
+﻿#include "qt_utils.h"
 #include <QApplication>
 #include <QBitmap>
+#include <QDesktopServices>
 #include <QFontMetrics>
 #include <QPainter>
+#include <QProcess>
 #include <QScreen>
+#include <QUrl>
 
 #include "Emu/System.h"
 
@@ -84,6 +86,7 @@ namespace gui
 				white_pixmap.setMask(white_mask);
 
 				QPainter painter(&pixmap);
+				painter.setRenderHint(QPainter::SmoothPixmapTransform);
 				painter.drawPixmap(QPoint(0, 0), white_pixmap);
 				//painter.drawPixmap(QPoint(0, 0), test_pixmap);
 				painter.end();
@@ -123,6 +126,11 @@ namespace gui
 			return dummy_font.font();
 		}
 
+		int get_label_width(const QString& text)
+		{
+			return QLabel(text).sizeHint().width();
+		}
+
 		QImage get_opaque_image_area(const QString& path)
 		{
 			QImage image = QImage(path);
@@ -134,7 +142,7 @@ namespace gui
 
 			for (int y = 0; y < image.height(); ++y)
 			{
-				QRgb *row = (QRgb*)image.scanLine(y);
+				QRgb* row = reinterpret_cast<QRgb*>(image.scanLine(y));
 				bool row_filled = false;
 
 				for (int x = 0; x < image.width(); ++x)
@@ -171,7 +179,7 @@ namespace gui
 
 			for (int i = 0; i < combo->count(); ++i)
 			{
-				max_width = std::max(max_width, font_metrics.width(combo->itemText(i)));
+				max_width = std::max(max_width, font_metrics.horizontalAdvance(combo->itemText(i)));
 			}
 
 			if (combo->view()->minimumWidth() < max_width)
@@ -189,22 +197,22 @@ namespace gui
 				return;
 
 			int item_count = table->rowCount();
-			bool is_empty = item_count < 1;
+			const bool is_empty = item_count < 1;
 			if (is_empty)
 				table->insertRow(0);
 
-			int item_height = table->rowHeight(0);
+			const int item_height = table->rowHeight(0);
 			if (is_empty)
 			{
 				table->clearContents();
 				table->setRowCount(0);
 			}
 
-			int available_height = table->rect().height() - table->horizontalHeader()->height() - table->frameWidth() * 2;
+			const int available_height = table->rect().height() - table->horizontalHeader()->height() - table->frameWidth() * 2;
 			if (available_height < item_height || item_height < 1)
 				return;
 
-			int new_item_count = available_height / item_height;
+			const int new_item_count = available_height / item_height;
 			if (new_item_count == item_count)
 				return;
 
@@ -238,7 +246,8 @@ namespace gui
 		{
 			// get Icon for the gs_frame from path. this handles presumably all possible use cases
 			const QString qpath = qstr(path);
-			const std::string path_list[] = { path, sstr(qpath.section("/", 0, -2)), sstr(qpath.section("/", 0, -3)) };
+			const std::string path_list[] = { path, sstr(qpath.section("/", 0, -2, QString::SectionIncludeTrailingSep)),
+			                                  sstr(qpath.section("/", 0, -3, QString::SectionIncludeTrailingSep)) };
 
 			for (const std::string& pth : path_list)
 			{
@@ -253,19 +262,20 @@ namespace gui
 				{
 					// load the image from path. It will most likely be a rectangle
 					QImage source = QImage(qstr(ico));
-					int edgeMax = std::max(source.width(), source.height());
+					const int edge_max = std::max(source.width(), source.height());
 
 					// create a new transparent image with square size and same format as source (maybe handle other formats than RGB32 as well?)
 					QImage::Format format = source.format() == QImage::Format_RGB32 ? QImage::Format_ARGB32 : source.format();
-					QImage dest = QImage(edgeMax, edgeMax, format);
-					dest.fill(QColor("transparent"));
+					QImage dest = QImage(edge_max, edge_max, format);
+					dest.fill(Qt::transparent);
 
 					// get the location to draw the source image centered within the dest image.
-					QPoint destPos = source.width() > source.height() ? QPoint(0, (source.width() - source.height()) / 2) : QPoint((source.height() - source.width()) / 2, 0);
+					const QPoint dest_pos = source.width() > source.height() ? QPoint(0, (source.width() - source.height()) / 2) : QPoint((source.height() - source.width()) / 2, 0);
 
 					// Paint the source into/over the dest
 					QPainter painter(&dest);
-					painter.drawImage(destPos, source);
+					painter.setRenderHint(QPainter::SmoothPixmapTransform);
+					painter.drawImage(dest_pos, source);
 					painter.end();
 
 					return QIcon(QPixmap::fromImage(dest));
@@ -273,6 +283,174 @@ namespace gui
 			}
 			// if nothing was found reset the icon to default
 			return QApplication::windowIcon();
+		}
+
+		void open_dir(const std::string& spath)
+		{
+			fs::create_dir(spath);
+			const QString path = qstr(spath);
+
+			if (fs::is_file(spath))
+			{
+				// open directory and select file
+				// https://stackoverflow.com/questions/3490336/how-to-reveal-in-finder-or-show-in-explorer-with-qt
+#ifdef _WIN32
+				QProcess::startDetached("explorer.exe", { "/select,", QDir::toNativeSeparators(path) });
+#elif defined(__APPLE__)
+				QProcess::execute("/usr/bin/osascript", { "-e", "tell application \"Finder\" to reveal POSIX file \"" + path + "\"" });
+				QProcess::execute("/usr/bin/osascript", { "-e", "tell application \"Finder\" to activate" });
+#else
+		// open parent directory
+				QDesktopServices::openUrl(QUrl("file:///" + qstr(fs::get_parent_dir(spath))));
+#endif
+				return;
+			}
+
+			QDesktopServices::openUrl(QUrl("file:///" + path));
+		}
+
+		void open_dir(const QString& path)
+		{
+			open_dir(sstr(path));
+		}
+
+		QTreeWidgetItem* find_child(QTreeWidgetItem* parent, const QString& text)
+		{
+			if (parent)
+			{
+				for (int i = 0; i < parent->childCount(); i++)
+				{
+					if (parent->child(i)->text(0) == text)
+					{
+						return parent->child(i);
+					}
+				}
+			}
+			return nullptr;
+		}
+
+		QList<QTreeWidgetItem*> find_children_by_data(QTreeWidgetItem* parent, const QList<QPair<int /*role*/, QVariant /*data*/>>& criteria, bool recursive)
+		{
+			QList<QTreeWidgetItem*> list;
+
+			if (parent)
+			{
+				for (int i = 0; i < parent->childCount(); i++)
+				{
+					if (auto item = parent->child(i))
+					{
+						bool match = true;
+
+						for (const auto& [role, data] : criteria)
+						{
+							if (item->data(0, role) != data)
+							{
+								match = false;
+								break;
+							}
+						}
+
+						if (match)
+						{
+							list << item;
+						}
+
+						if (recursive)
+						{
+							list << find_children_by_data(item, criteria, recursive);
+						}
+					}
+				}
+			}
+
+			return list;
+		}
+
+		QTreeWidgetItem* add_child(QTreeWidgetItem *parent, const QString& text, int column)
+		{
+			if (parent)
+			{
+				QTreeWidgetItem *tree_item = new QTreeWidgetItem();
+				tree_item->setText(column, text);
+				parent->addChild(tree_item);
+				return tree_item;
+			}
+			return nullptr;
+		};
+
+		void remove_children(QTreeWidgetItem* parent)
+		{
+			if (parent)
+			{
+				for (int i = parent->childCount() - 1; i >= 0; i--)
+				{
+					parent->removeChild(parent->child(i));
+				}
+			}
+		}
+
+		void remove_children(QTreeWidgetItem* parent, const QList<QPair<int /*role*/, QVariant /*data*/>>& criteria, bool recursive)
+		{
+			if (parent)
+			{
+				for (int i = parent->childCount() - 1; i >= 0; i--)
+				{
+					if (auto item = parent->child(i))
+					{
+						bool match = true;
+
+						for (const auto [role, data] : criteria)
+						{
+							if (item->data(0, role) != data)
+							{
+								match = false;
+								break;
+							}
+						}
+
+						if (!match)
+						{
+							parent->removeChild(item);
+						}
+						else if (recursive)
+						{
+							remove_children(item, criteria, recursive);
+						}
+					}
+				}
+			}
+		}
+
+		void sort_tree_item(QTreeWidgetItem* item, Qt::SortOrder sort_order, bool recursive)
+		{
+			if (item)
+			{
+				item->sortChildren(0, sort_order);
+
+				if (recursive)
+				{
+					for (int i = 0; i < item->childCount(); i++)
+					{
+						sort_tree_item(item->child(i), sort_order, recursive);
+					}
+				}
+			}
+		}
+
+		void sort_tree(QTreeWidget* tree, Qt::SortOrder sort_order, bool recursive)
+		{
+			if (tree)
+			{
+				tree->sortByColumn(0, sort_order);
+
+				if (recursive)
+				{
+					for (int i = 0; i < tree->topLevelItemCount(); i++)
+					{
+						sort_tree_item(tree->topLevelItem(i), sort_order, recursive);
+					}
+				}
+			}
 		}
 	} // utils
 } // gui

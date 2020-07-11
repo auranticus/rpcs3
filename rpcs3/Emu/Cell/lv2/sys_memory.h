@@ -76,19 +76,15 @@ struct lv2_memory_container
 	}
 };
 
-struct lv2_memory_alloca
+struct sys_memory_user_memory_stat_t
 {
-	static const u32 id_base = 0x1;
-	static const u32 id_step = 0x1;
-	static const u32 id_count = 0x2000;
-
-	const u32 size; // Memory size
-	const u32 align; // Alignment required
-	const u64 flags;
-	const std::shared_ptr<lv2_memory_container> ct;
-	const std::shared_ptr<utils::shm> shm;
-
-	lv2_memory_alloca(u32 size, u32 align, u64 flags, const std::shared_ptr<lv2_memory_container>& ct);
+	be_t<u32> a; // 0x0
+	be_t<u32> b; // 0x4
+	be_t<u32> c; // 0x8
+	be_t<u32> d; // 0xc
+	be_t<u32> e; // 0x10
+	be_t<u32> f; // 0x14
+	be_t<u32> g; // 0x18
 };
 
 // SysCalls
@@ -97,6 +93,7 @@ error_code sys_memory_allocate_from_container(u32 size, u32 cid, u64 flags, vm::
 error_code sys_memory_free(u32 start_addr);
 error_code sys_memory_get_page_attribute(u32 addr, vm::ptr<sys_page_attr_t> attr);
 error_code sys_memory_get_user_memory_size(vm::ptr<sys_memory_info_t> mem_info);
+error_code sys_memory_get_user_memory_stat(vm::ptr<sys_memory_user_memory_stat_t> mem_stat);
 error_code sys_memory_container_create(vm::ptr<u32> cid, u32 size);
 error_code sys_memory_container_destroy(u32 cid);
 error_code sys_memory_container_get_size(vm::ptr<sys_memory_info_t> mem_info, u32 cid);

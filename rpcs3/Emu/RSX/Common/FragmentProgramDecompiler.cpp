@@ -1,18 +1,14 @@
 ﻿#include "stdafx.h"
-#include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "../rsx_methods.h"
-
 #include "FragmentProgramDecompiler.h"
 
 #include <algorithm>
 
-FragmentProgramDecompiler::FragmentProgramDecompiler(const RSXFragmentProgram &prog, u32& size) :
-	m_prog(prog),
-	m_size(size),
-	m_const_index(0),
-	m_location(0),
-	m_ctrl(prog.ctrl)
+FragmentProgramDecompiler::FragmentProgramDecompiler(const RSXFragmentProgram &prog, u32& size)
+	: m_size(size)
+	, m_prog(prog)
+	, m_ctrl(prog.ctrl)
 {
 	m_size = 0;
 }
@@ -35,7 +31,7 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 		case 7: code = "(" + code + " / "; modifier = "8."; break;
 
 		default:
-			LOG_ERROR(RSX, "Bad scale: %d", u32{ src1.scale });
+			rsx_log.error("Bad scale: %d", u32{ src1.scale });
 			break;
 		}
 
@@ -52,13 +48,6 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 
 	if (!dst.no_dest)
 	{
-		if (dst.exp_tex)
-		{
-			//Expand [0,1] to [-1, 1]. Confirmed by Castlevania: LOS
-			AddCode("//exp tex flag is set");
-			code = "((" + code + "- 0.5) * 2.)";
-		}
-
 		if (dst.fp16 && device_props.has_native_half_support && !(flags & OPFLAGS::skip_type_cast))
 		{
 			// Cast to native data type
@@ -79,17 +68,16 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 			case RSX_FP_OPCODE_COS:
 			case RSX_FP_OPCODE_SIN:
 			case RSX_FP_OPCODE_REFL:
-			case RSX_FP_OPCODE_EX2:
 			case RSX_FP_OPCODE_FRC:
 			case RSX_FP_OPCODE_LIT:
 			case RSX_FP_OPCODE_LIF:
-			case RSX_FP_OPCODE_LRP:
 			case RSX_FP_OPCODE_LG2:
 				break;
 			case RSX_FP_OPCODE_MOV:
 				// NOTE: Sometimes varying inputs from VS are out of range so do not exempt any input types, unless fp16 (Naruto UNS)
 				if (dst.fp16 && src0.fp16 && src0.reg_type == RSX_FP_REGISTER_TYPE_TEMP)
 					break;
+				[[fallthrough]];
 			default:
 			{
 				// fp16 precsion flag on f32 register; ignore
@@ -125,9 +113,10 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 		return;
 	}
 
-	std::string dest = AddReg(dst.dest_reg, !!dst.fp16) + "$m";
+	const std::string dest = AddReg(dst.dest_reg, !!dst.fp16) + "$m";
+	const std::string decoded_dest = Format(dest);
 
-	AddCodeCond(Format(dest), code);
+	AddCodeCond(decoded_dest, code);
 	//AddCode("$ifcond " + dest + code + (append_mask ? "$m;" : ";"));
 
 	if (dst.set_cond)
@@ -138,6 +127,20 @@ void FragmentProgramDecompiler::SetDst(std::string code, u32 flags)
 	u32 reg_index = dst.fp16 ? dst.dest_reg >> 1 : dst.dest_reg;
 
 	verify(HERE), reg_index < temp_registers.size();
+
+	if (dst.opcode == RSX_FP_OPCODE_MOV &&
+		src0.reg_type == RSX_FP_REGISTER_TYPE_TEMP &&
+		src0.tmp_reg_index == reg_index)
+	{
+		// The register did not acquire any new data
+		// Common in code with structures like r0.xy = r0.xy
+		// Unsure why such code would exist, maybe placeholders for dynamically generated shader code?
+		if (decoded_dest == Format(code))
+		{
+			return;
+		}
+	}
+
 	temp_registers[reg_index].tag(dst.dest_reg, !!dst.fp16, dst.mask_x, dst.mask_y, dst.mask_z, dst.mask_w);
 }
 
@@ -170,18 +173,17 @@ void FragmentProgramDecompiler::AddCode(const std::string& code)
 std::string FragmentProgramDecompiler::GetMask()
 {
 	std::string ret;
+	ret.reserve(5);
+	
+	static constexpr std::string_view dst_mask = "xyzw";
 
-	static const char dst_mask[4] =
-	{
-		'x', 'y', 'z', 'w',
-	};
-
+	ret += '.';
 	if (dst.mask_x) ret += dst_mask[0];
 	if (dst.mask_y) ret += dst_mask[1];
 	if (dst.mask_z) ret += dst_mask[2];
 	if (dst.mask_w) ret += dst_mask[3];
 
-	return ret.empty() || strncmp(ret.c_str(), dst_mask, 4) == 0 ? "" : ("." + ret);
+	return ret == "."sv || ret == ".xyzw"sv ? "" : (ret);
 }
 
 std::string FragmentProgramDecompiler::AddReg(u32 index, bool fp16)
@@ -215,7 +217,7 @@ std::string FragmentProgramDecompiler::AddConst()
 		return name;
 	}
 
-	auto data = (be_t<u32>*) ((char*)m_prog.addr + m_size + 4 * u32{sizeof(u32)});
+	auto data = reinterpret_cast<be_t<u32>*>(static_cast<char*>(m_prog.addr) + m_size + 4 * sizeof(u32));
 	m_offset = 2 * 4 * sizeof(u32);
 	u32 x = GetData(data[0]);
 	u32 y = GetData(data[1]);
@@ -290,7 +292,7 @@ std::string FragmentProgramDecompiler::ClampValue(const std::string& code, u32 p
 		// Doesn't seem to do anything to the input from hw tests, same as 0
 		break;
 	default:
-		LOG_ERROR(RSX, "Unexpected precision modifier (%d)\n", precision);
+		rsx_log.error("Unexpected precision modifier (%d)\n", precision);
 		break;
 	}
 
@@ -363,14 +365,20 @@ std::string FragmentProgramDecompiler::Format(const std::string& code, bool igno
 
 std::string FragmentProgramDecompiler::GetRawCond()
 {
-	static const char f[4] = { 'x', 'y', 'z', 'w' };
+	static constexpr std::string_view f = "xyzw";
 
 	std::string swizzle, cond;
+	swizzle.reserve(5);
+	swizzle += '.';
 	swizzle += f[src0.cond_swizzle_x];
 	swizzle += f[src0.cond_swizzle_y];
 	swizzle += f[src0.cond_swizzle_z];
 	swizzle += f[src0.cond_swizzle_w];
-	swizzle = swizzle == "xyzw" ? "" : "." + swizzle;
+
+	if (swizzle == ".xyzw"sv)
+	{
+		swizzle.clear();
+	}
 
 	if (src0.exec_if_gr && src0.exec_if_eq)
 		cond = compareFunction(COMPARE::FUNCTION_SGE, AddCond() + swizzle, getFloatTypeName(4) + "(0., 0., 0., 0.)");
@@ -426,17 +434,17 @@ void FragmentProgramDecompiler::AddCodeCond(const std::string& lhs, const std::s
 
 		bool src_is_fp16 = false;
 		if ((opflags & (OPFLAGS::texture_ref | OPFLAGS::src_cast_f32)) == 0 &&
-			rhs.find("$0") != std::string::npos)
+			rhs.find("$0") != umax)
 		{
 			// Texture sample operations are full-width and are exempt
 			src_is_fp16 = (src0.fp16 && src0.reg_type == RSX_FP_REGISTER_TYPE_TEMP);
 
-			if (src_is_fp16 && rhs.find("$1") != std::string::npos)
+			if (src_is_fp16 && rhs.find("$1") != umax)
 			{
 				// References operand 1
 				src_is_fp16 = (src1.fp16 && src1.reg_type == RSX_FP_REGISTER_TYPE_TEMP);
 
-				if (src_is_fp16 && rhs.find("$2") != std::string::npos)
+				if (src_is_fp16 && rhs.find("$2") != umax)
 				{
 					// References operand 2
 					src_is_fp16 = (src2.fp16 && src2.reg_type == RSX_FP_REGISTER_TYPE_TEMP);
@@ -470,7 +478,20 @@ void FragmentProgramDecompiler::AddCodeCond(const std::string& lhs, const std::s
 template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 {
 	std::string ret;
-	bool apply_precision_modifier = !!src1.input_prec_mod;
+	u32 precision_modifier = 0;
+
+	if constexpr (std::is_same<T, SRC0>::value)
+	{
+		precision_modifier = src1.src0_prec_mod;
+	}
+	else if constexpr (std::is_same<T, SRC1>::value)
+	{
+		precision_modifier = src1.src1_prec_mod;
+	}
+	else if constexpr (std::is_same<T, SRC2>::value)
+	{
+		precision_modifier = src1.src2_prec_mod;
+	}
 
 	switch (src.reg_type)
 	{
@@ -494,10 +515,10 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 				}
 			}
 		}
-		else if (src1.input_prec_mod == RSX_FP_PRECISION_HALF)
+		else if (precision_modifier == RSX_FP_PRECISION_HALF)
 		{
 			// clamp16() is not a cheap operation when emulated; avoid at all costs
-			apply_precision_modifier = false;
+			precision_modifier = RSX_FP_PRECISION_REAL;
 		}
 
 		ret += AddReg(src.tmp_reg_index, src.fp16);
@@ -544,7 +565,7 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 			if (!src2.use_index_reg)
 			{
 				ret += "_saturate(" + reg_var + ")";
-				apply_precision_modifier = false;
+				precision_modifier = RSX_FP_PRECISION_REAL;
 			}
 			else
 			{
@@ -579,10 +600,24 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 		case 0xD:
 		{
 			// TEX0 - TEX9
-			// Texcoord mask seems to reset the last 2 arguments to 0 and 1 if set
-			if (m_prog.texcoord_is_2d(dst.src_attr_reg_num - 4))
+			// Texcoord 2d mask seems to reset the last 2 arguments to 0 and w if set
+			const u8 texcoord = u8(dst.src_attr_reg_num) - 4;
+			if (m_prog.texcoord_is_point_coord(texcoord))
 			{
-				ret += getFloatTypeName(4) + "(" + reg_var + ".x, " + reg_var + ".y, 0., in_w)";
+				// Point sprite coord generation. Stacks with the 2D override mask.
+				if (m_prog.texcoord_is_2d(texcoord))
+				{
+					ret += getFloatTypeName(4) + "(gl_PointCoord, 0., in_w)";
+					properties.has_w_access = true;
+				}
+				else
+				{
+					ret += getFloatTypeName(4) + "(gl_PointCoord, 1., 0.)";
+				}
+			}
+			else if (m_prog.texcoord_is_2d(texcoord))
+			{
+				ret += getFloatTypeName(4) + "(" + reg_var + ".xy, 0., in_w)";
 				properties.has_w_access = true;
 			}
 			else
@@ -597,11 +632,11 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 			// UNK
 			if (reg_var == "unk")
 			{
-				LOG_ERROR(RSX, "Bad src reg num: %d", u32{ dst.src_attr_reg_num });
+				rsx_log.error("Bad src reg num: %d", u32{ dst.src_attr_reg_num });
 			}
 
 			ret += reg_var;
-			apply_precision_modifier = false;
+			precision_modifier = RSX_FP_PRECISION_REAL;
 			break;
 		}
 		}
@@ -617,36 +652,40 @@ template<typename T> std::string FragmentProgramDecompiler::GetSRC(T src)
 
 	case RSX_FP_REGISTER_TYPE_CONSTANT:
 		ret += AddConst();
-		apply_precision_modifier = false;
 		break;
 
 	case RSX_FP_REGISTER_TYPE_UNKNOWN: // ??? Used by a few games, what is it?
-		LOG_ERROR(RSX, "Src type 3 used, opcode=0x%X, dst=0x%X s0=0x%X s1=0x%X s2=0x%X",
+		rsx_log.error("Src type 3 used, opcode=0x%X, dst=0x%X s0=0x%X s1=0x%X s2=0x%X",
 				dst.opcode, dst.HEX, src0.HEX, src1.HEX, src2.HEX);
 
 		ret += AddType3();
-		apply_precision_modifier = false;
+		precision_modifier = RSX_FP_PRECISION_REAL;
 		break;
 
 	default:
-		LOG_ERROR(RSX, "Bad src type %d", u32{ src.reg_type });
+		rsx_log.error("Bad src type %d", u32{ src.reg_type });
 		Emu.Pause();
 		break;
 	}
 
-	static const char f[4] = { 'x', 'y', 'z', 'w' };
+	static constexpr std::string_view f = "xyzw";
 
 	std::string swizzle;
+	swizzle.reserve(5);
+	swizzle += '.';
 	swizzle += f[src.swizzle_x];
 	swizzle += f[src.swizzle_y];
 	swizzle += f[src.swizzle_z];
 	swizzle += f[src.swizzle_w];
 
-	if (strncmp(swizzle.c_str(), f, 4) != 0) ret += "." + swizzle;
+	if (swizzle != ".xyzw"sv)
+	{
+		ret += swizzle;
+	}
 
 	// Warning: Modifier order matters. e.g neg should be applied after precision clamping (tested with Naruto UNS)
 	if (src.abs) ret = "abs(" + ret + ")";
-	if (apply_precision_modifier) ret = ClampValue(ret, src1.input_prec_mod);
+	if (precision_modifier) ret = ClampValue(ret, precision_modifier);
 	if (src.neg) ret = "-" + ret;
 
 	return ret;
@@ -668,7 +707,7 @@ std::string FragmentProgramDecompiler::BuildCode()
 	if (m_ctrl & CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT)
 	{
 		// Hw tests show that the depth export register is default-initialized to 0 and not wpos.z!!
-		m_parr.AddParam(PF_PARAM_NONE, float4_type, "r1", init_value);
+		m_parr.AddParam(PF_PARAM_NONE, getFloatTypeName(4), "r1", init_value);
 		shader_is_valid = (!!temp_registers[1].h1_writes);
 	}
 
@@ -702,7 +741,7 @@ std::string FragmentProgramDecompiler::BuildCode()
 		if (!properties.has_discard_op)
 		{
 			// NOTE: Discard operation overrides output
-			LOG_WARNING(RSX, "Shader does not write to any output register and will be NOPed");
+			rsx_log.warning("Shader does not write to any output register and will be NOPed");
 			main = "/*" + main + "*/";
 		}
 	}
@@ -897,7 +936,7 @@ bool FragmentProgramDecompiler::handle_sct_scb(u32 opcode)
 
 	// SCB-only ops
 	case RSX_FP_OPCODE_COS: SetDst("cos($0.xxxx)"); return true;
-	case RSX_FP_OPCODE_DST: SetDst("distance($0, $1).xxxx", OPFLAGS::src_cast_f32); return true;
+	case RSX_FP_OPCODE_DST: SetDst("$Ty(1.0, $0.y * $1.y, $0.z, $1.w)", OPFLAGS::op_extern); return true;
 	case RSX_FP_OPCODE_REFL: SetDst(getFunction(FUNCTION::FUNCTION_REFL), OPFLAGS::op_extern); return true;
 	case RSX_FP_OPCODE_EX2: SetDst("exp2($0.xxxx)"); return true;
 	case RSX_FP_OPCODE_FLR: SetDst("floor($0)"); return true;
@@ -909,10 +948,15 @@ bool FragmentProgramDecompiler::handle_sct_scb(u32 opcode)
 	case RSX_FP_OPCODE_LIF: SetDst("$Ty(1.0, $0.y, ($0.y > 0 ? pow(2.0, $0.w) : 0.0), 1.0)", OPFLAGS::op_extern); return true;
 	case RSX_FP_OPCODE_LRP: SetDst("$Ty($2 * (1 - $0) + $1 * $0)", OPFLAGS::skip_type_cast); return true;
 	case RSX_FP_OPCODE_LG2: SetDst("_builtin_log2($0.x).xxxx"); return true;
-		// Pack operations. See https://www.khronos.org/registry/OpenGL/extensions/NV/NV_fragment_program.txt
+	// Pack operations. See https://www.khronos.org/registry/OpenGL/extensions/NV/NV_fragment_program.txt
+	// PK2 = PK2H (2 16-bit floats)
+	// PK16 = PK2US (2 unsigned 16-bit scalars)
+	// PK4 = PK4B (4 signed 8-bit scalars)
+	// PKB = PK4UB (4 unsigned 8-bit scalars)
+	// PK16/UP16 behavior confirmed by Saints Row: Gat out of Hell, ARGB8 -> X16Y16 conversion relies on this to render the wings
 	case RSX_FP_OPCODE_PK2: SetDst(getFloatTypeName(4) + "(uintBitsToFloat(packHalf2x16($0.xy)))"); return true;
 	case RSX_FP_OPCODE_PK4: SetDst(getFloatTypeName(4) + "(uintBitsToFloat(packSnorm4x8($0)))"); return true;
-	case RSX_FP_OPCODE_PK16: SetDst(getFloatTypeName(4) + "(uintBitsToFloat(packSnorm2x16($0.xy)))"); return true;
+	case RSX_FP_OPCODE_PK16: SetDst(getFloatTypeName(4) + "(uintBitsToFloat(packUnorm2x16($0.xy)))"); return true;
 	case RSX_FP_OPCODE_PKG:
 		// Should be similar to PKB but with gamma correction, see description of PK4UBG in khronos page
 	case RSX_FP_OPCODE_PKB: SetDst(getFloatTypeName(4) + "(uintBitsToFloat(packUnorm4x8($0)))"); return true;
@@ -923,6 +967,46 @@ bool FragmentProgramDecompiler::handle_sct_scb(u32 opcode)
 
 bool FragmentProgramDecompiler::handle_tex_srb(u32 opcode)
 {
+	auto insert_texture_fetch = [this](const std::array<FUNCTION, 6>& functions)
+	{
+		const auto type = m_prog.get_texture_dimension(dst.tex_num);
+		std::string mask = "";
+		auto select = static_cast<u8>(type);
+
+		if (type == rsx::texture_dimension_extended::texture_dimension_2d)
+		{
+			if (m_prog.shadow_textures & (1 << dst.tex_num))
+			{
+				m_shadow_sampled_textures |= (1 << dst.tex_num);
+				select = 4;
+				mask = ".xxxx";
+			}
+			else
+			{
+				m_2d_sampled_textures |= (1 << dst.tex_num);
+				if (m_prog.redirected_textures & (1 << dst.tex_num))
+				{
+					select = 5;
+				}
+			}
+		}
+
+		if (dst.exp_tex)
+		{
+			properties.has_exp_tex_op = true;
+			AddCode("_enable_texture_expand();");
+		}
+
+		auto function = functions[select];
+		SetDst(getFunction(function) + mask);
+
+		if (dst.exp_tex)
+		{
+			// Cleanup
+			AddCode("_disable_texture_expand();");
+		}
+	};
+
 	switch (opcode)
 	{
 	case RSX_FP_OPCODE_DDX: SetDst(getFunction(FUNCTION::FUNCTION_DFDX)); return true;
@@ -930,127 +1014,106 @@ bool FragmentProgramDecompiler::handle_tex_srb(u32 opcode)
 	case RSX_FP_OPCODE_NRM: SetDst("_builtin_normalize($0.xyz).xyzz", OPFLAGS::src_cast_f32); return true;
 	case RSX_FP_OPCODE_BEM: SetDst("$0.xyxy + $1.xxxx * $2.xzxz + $1.yyyy * $2.ywyw"); return true;
 	case RSX_FP_OPCODE_TEXBEM:
+	{
 		//Untested, should be x2d followed by TEX
 		AddX2d();
 		AddCode(Format("x2d = $0.xyxy + $1.xxxx * $2.xzxz + $1.yyyy * $2.ywyw;", true));
+		[[fallthrough]];
+	}
 	case RSX_FP_OPCODE_TEX:
+	{
 		AddTex();
-		switch (m_prog.get_texture_dimension(dst.tex_num))
-		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE1D));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			if (m_prog.shadow_textures & (1 << dst.tex_num))
-			{
-				m_shadow_sampled_textures |= (1 << dst.tex_num);
-				SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SHADOW2D) + ".xxxx");
-				return true;
-			}
-			if (m_prog.redirected_textures & (1 << dst.tex_num))
-				SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_DEPTH_RGBA));
-			else
-				SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D));
-			m_2d_sampled_textures |= (1 << dst.tex_num);
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE3D));
-			return true;
-		}
-		return false;
+		insert_texture_fetch({
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE1D,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE3D,
+			FUNCTION::FUNCTION_TEXTURE_SHADOW2D,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_DEPTH_RGBA
+		});
+
+		return true;
+	}
 	case RSX_FP_OPCODE_TXPBEM:
-		//Untested, should be x2d followed by TXP
+	{
+		// Untested, should be x2d followed by TXP
 		AddX2d();
 		AddCode(Format("x2d = $0.xyxy + $1.xxxx * $2.xzxz + $1.yyyy * $2.ywyw;", true));
+		[[fallthrough]];
+	}
 	case RSX_FP_OPCODE_TXP:
+	{
 		AddTex();
-		switch (m_prog.get_texture_dimension(dst.tex_num))
-		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_PROJ));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			//Note shadow comparison only returns a true/false result!
-			if (m_prog.shadow_textures & (1 << dst.tex_num))
-			{
-				m_shadow_sampled_textures |= (1 << dst.tex_num);
-				SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SHADOW2D_PROJ) + ".xxxx");
-			}
-			else
-				SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_PROJ));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_PROJ));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_PROJ));
-			return true;
-		}
-		return false;
+		insert_texture_fetch({
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_PROJ,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_PROJ,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_PROJ,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_PROJ,
+			FUNCTION::FUNCTION_TEXTURE_SHADOW2D_PROJ,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_DEPTH_RGBA_PROJ
+		});
+
+		return true;
+	}
 	case RSX_FP_OPCODE_TXD:
+	{
 		AddTex();
-		switch (m_prog.get_texture_dimension(dst.tex_num))
+
+		if (m_prog.redirected_textures & (1 << dst.tex_num) ||
+			m_prog.shadow_textures & (1 << dst.tex_num))
 		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_GRAD));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_GRAD));
-			m_2d_sampled_textures |= (1 << dst.tex_num);
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_GRAD));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_GRAD));
-			return true;
+			// Doesn't make sense to sample with derivates for these types
+			rsx_log.error("[Unimplemented warning] TXD operation performed on shadow/redirected texture!");
 		}
-		return false;
+
+		insert_texture_fetch({
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_GRAD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_GRAD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_GRAD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_GRAD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_GRAD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_GRAD
+		});
+
+		return true;
+	}
 	case RSX_FP_OPCODE_TXB:
+	{
 		AddTex();
-		switch (m_prog.get_texture_dimension(dst.tex_num))
-		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_BIAS));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_BIAS));
-			m_2d_sampled_textures |= (1 << dst.tex_num);
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_BIAS));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_BIAS));
-			return true;
-		}
-		return false;
+		insert_texture_fetch({
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_BIAS,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_BIAS,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_BIAS,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_BIAS,
+			FUNCTION::FUNCTION_TEXTURE_SHADOW2D,              // Shadow and depth_rgba variants are generated for framebuffers where only LOD0 exists
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_DEPTH_RGBA
+		});
+
+		return true;
+	}
 	case RSX_FP_OPCODE_TXL:
+	{
 		AddTex();
-		switch (m_prog.get_texture_dimension(dst.tex_num))
-		{
-		case rsx::texture_dimension_extended::texture_dimension_1d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_LOD));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_2d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_LOD));
-			m_2d_sampled_textures |= (1 << dst.tex_num);
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_cubemap:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_LOD));
-			return true;
-		case rsx::texture_dimension_extended::texture_dimension_3d:
-			SetDst(getFunction(FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_LOD));
-			return true;
-		}
-		return false;
+		insert_texture_fetch({
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE1D_LOD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_LOD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLECUBE_LOD,
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE3D_LOD,
+			FUNCTION::FUNCTION_TEXTURE_SHADOW2D,              // Shadow and depth_rgba variants are generated for framebuffers where only LOD0 exists
+			FUNCTION::FUNCTION_TEXTURE_SAMPLE2D_DEPTH_RGBA
+		});
+
+		return true;
+	}
 	// Unpack operations. See https://www.khronos.org/registry/OpenGL/extensions/NV/NV_fragment_program.txt
+	// UP2 = UP2H (2 16-bit floats)
+	// UP16 = UP2US (2 unsigned 16-bit scalars)
+	// UP4 = UP4B (4 signed 8-bit scalars)
+	// UPB = UP4UB (4 unsigned 8-bit scalars)
+	// PK16/UP16 behavior confirmed by Saints Row: Gat out of Hell, ARGB8 -> X16Y16 conversion relies on this to render the wings
 	case RSX_FP_OPCODE_UP2: SetDst("unpackHalf2x16(floatBitsToUint($0.x)).xyxy"); return true;
 	case RSX_FP_OPCODE_UP4: SetDst("unpackSnorm4x8(floatBitsToUint($0.x))"); return true;
-	case RSX_FP_OPCODE_UP16: SetDst("unpackSnorm2x16(floatBitsToUint($0.x)).xyxy"); return true;
+	case RSX_FP_OPCODE_UP16: SetDst("unpackUnorm2x16(floatBitsToUint($0.x)).xyxy"); return true;
 	case RSX_FP_OPCODE_UPG:
 	// Same as UPB with gamma correction
 	case RSX_FP_OPCODE_UPB: SetDst("(unpackUnorm4x8(floatBitsToUint($0.x)))"); return true;
@@ -1060,7 +1123,7 @@ bool FragmentProgramDecompiler::handle_tex_srb(u32 opcode)
 
 std::string FragmentProgramDecompiler::Decompile()
 {
-	auto data = (be_t<u32>*) m_prog.addr;
+	auto data = static_cast<be_t<u32>*>(m_prog.addr);
 	m_size = 0;
 	m_location = 0;
 	m_loop_count = 0;
@@ -1115,10 +1178,10 @@ std::string FragmentProgramDecompiler::Decompile()
 			{
 			case RSX_FP_OPCODE_BRK:
 				if (m_loop_count) AddFlowOp("break");
-				else LOG_ERROR(RSX, "BRK opcode found outside of a loop");
+				else rsx_log.error("BRK opcode found outside of a loop");
 				break;
 			case RSX_FP_OPCODE_CAL:
-				LOG_ERROR(RSX, "Unimplemented SIP instruction: CAL");
+				rsx_log.error("Unimplemented SIP instruction: CAL");
 				break;
 			case RSX_FP_OPCODE_FENCT:
 				AddCode("//FENCT");
@@ -1184,7 +1247,7 @@ std::string FragmentProgramDecompiler::Decompile()
 		case RSX_FP_OPCODE_NOP: break;
 		case RSX_FP_OPCODE_KIL:
 			properties.has_discard_op = true;
-			AddFlowOp("discard");
+			AddFlowOp("_kill()");
 			break;
 
 		default:
@@ -1200,7 +1263,7 @@ std::string FragmentProgramDecompiler::Decompile()
 			if (handle_sct_scb(opcode)) break;
 			forced_unit = FORCE_NONE;
 
-			LOG_ERROR(RSX, "Unknown/illegal instruction: 0x%x (forced unit %d)", opcode, prev_force_unit);
+			rsx_log.error("Unknown/illegal instruction: 0x%x (forced unit %d)", opcode, prev_force_unit);
 			break;
 		}
 
@@ -1214,7 +1277,7 @@ std::string FragmentProgramDecompiler::Decompile()
 
 	while (m_code_level > 1)
 	{
-		LOG_ERROR(RSX, "Hanging block found at end of shader. Malformed shader?");
+		rsx_log.error("Hanging block found at end of shader. Malformed shader?");
 
 		m_code_level--;
 		AddCode("}");

@@ -3,20 +3,15 @@
 #include "stdafx.h"
 #include "Emu/RSX/GSRender.h"
 
-#include "gui_settings.h"
-
-#include <QWidget>
 #include <QWindow>
+#include <QPaintEvent>
 
 #ifdef _WIN32
 #include <QWinTaskbarProgress>
 #include <QWinTaskbarButton>
-#include <QWinTHumbnailToolbar>
-#include <QWinTHumbnailToolbutton>
-#elif HAVE_QTDBUS
-#include <QtDBus/QDBusMessage>
-#include <QtDBus/QDBusConnection>
 #endif
+
+class gui_settings;
 
 class gs_frame : public QWindow, public GSFrameBase
 {
@@ -36,11 +31,13 @@ private:
 	std::shared_ptr<gui_settings> m_gui_settings;
 
 	u64 m_frames = 0;
-	QString m_windowTitle;
-	bool m_disable_mouse;
+	QString m_window_title;
+	bool m_disable_mouse = false;
+	bool m_disable_kb_hotkeys = false;
+	bool m_show_mouse_in_fullscreen = false;
 
 public:
-	gs_frame(const QString& title, const QRect& geometry, const QIcon& appIcon, const std::shared_ptr<gui_settings>& gui_settings);
+	gs_frame(const QRect& geometry, const QIcon& appIcon, const std::shared_ptr<gui_settings>& gui_settings);
 	~gs_frame();
 
 	draw_context_t make_context() override;

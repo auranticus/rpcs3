@@ -1,14 +1,17 @@
+﻿#ifndef HAVE_ALSA
+#error "ALSA support disabled but still being built."
+#endif
+
 #include "stdafx.h"
-#include "Emu/System.h"
+#include "Emu/system_config.h"
 
 #include "ALSABackend.h"
 
-#ifdef HAVE_ALSA
-
+LOG_CHANNEL(ALSA);
 
 static void error(int err, const char* reason)
 {
-	LOG_ERROR(GENERAL, "ALSA: %s failed: %s\n", reason, snd_strerror(err));
+	ALSA.error("ALSA: %s failed: %s\n", reason, snd_strerror(err));
 }
 
 static bool check(int err, const char* reason)
@@ -23,6 +26,7 @@ static bool check(int err, const char* reason)
 }
 
 ALSABackend::ALSABackend()
+	: AudioBackend()
 {
 }
 
@@ -48,14 +52,14 @@ void ALSABackend::Open(u32 num_buffers)
 	if (!check(snd_pcm_hw_params_set_access(tls_handle, tls_hw_params, SND_PCM_ACCESS_RW_INTERLEAVED), "snd_pcm_hw_params_set_access"))
 		return;
 
-	if (!check(snd_pcm_hw_params_set_format(tls_handle, tls_hw_params, g_cfg.audio.convert_to_u16 ? SND_PCM_FORMAT_S16_LE : SND_PCM_FORMAT_FLOAT_LE), "snd_pcm_hw_params_set_format"))
+	if (!check(snd_pcm_hw_params_set_format(tls_handle, tls_hw_params, m_convert_to_u16 ? SND_PCM_FORMAT_S16_LE : SND_PCM_FORMAT_FLOAT_LE), "snd_pcm_hw_params_set_format"))
 		return;
 
-	uint rate = get_sampling_rate();
+	uint rate = m_sampling_rate;
 	if (!check(snd_pcm_hw_params_set_rate_near(tls_handle, tls_hw_params, &rate, nullptr), "snd_pcm_hw_params_set_rate_near"))
 		return;
 
-	if (!check(snd_pcm_hw_params_set_channels(tls_handle, tls_hw_params, get_channels()), "snd_pcm_hw_params_set_channels"))
+	if (!check(snd_pcm_hw_params_set_channels(tls_handle, tls_hw_params, m_channels), "snd_pcm_hw_params_set_channels"))
 		return;
 
 	//uint period = 5333;
@@ -89,7 +93,7 @@ void ALSABackend::Open(u32 num_buffers)
 	if (!check(snd_pcm_sw_params_current(tls_handle, tls_sw_params), "snd_pcm_sw_params_current"))
 		return;
 
-	period_frames *= g_cfg.audio.startt;
+	period_frames *= m_start_threshold;
 
 	if (!check(snd_pcm_sw_params_set_start_threshold(tls_handle, tls_sw_params, period_frames + 1), "snd_pcm_sw_params_set_start_threshold"))
 		return;
@@ -103,7 +107,7 @@ void ALSABackend::Open(u32 num_buffers)
 	if (!check(snd_pcm_prepare(tls_handle), "snd_pcm_prepare"))
 		return;
 
-	LOG_NOTICE(GENERAL, "ALSA: bufsize_frames=%u, period_frames=%u", bufsize_frames, period_frames);
+	ALSA.notice("bufsize_frames=%u, period_frames=%u", bufsize_frames, period_frames);
 }
 
 void ALSABackend::Close()
@@ -129,13 +133,13 @@ void ALSABackend::Close()
 
 bool ALSABackend::AddData(const void* src, u32 num_samples)
 {
-	u32 num_frames = num_samples / get_channels();
+	u32 num_frames = num_samples / m_channels;
 
 	int res = snd_pcm_writei(tls_handle, src, num_frames);
 
 	if (res == -EAGAIN)
 	{
-		LOG_WARNING(GENERAL, "ALSA: EAGAIN");
+		ALSA.warning("EAGAIN");
 		return false;
 	}
 
@@ -145,20 +149,18 @@ bool ALSABackend::AddData(const void* src, u32 num_samples)
 
 		if (res < 0)
 		{
-			LOG_WARNING(GENERAL, "ALSA: failed to recover (%d)", res);
+			ALSA.warning("Failed to recover (%d)", res);
 			return false;
 		}
 
 		return false;
 	}
 
-	if (res != num_frames)
+	if (res + 0u != num_frames)
 	{
-		LOG_WARNING(GENERAL, "ALSA: error (%d)", res);
+		ALSA.warning("Error (%d)", res);
 		return false;
 	}
 
 	return true;
 }
-
-#endif

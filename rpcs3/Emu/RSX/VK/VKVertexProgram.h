@@ -1,15 +1,30 @@
-#pragma once
+﻿#pragma once
 #include "../Common/VertexProgramDecompiler.h"
 #include "Emu/RSX/RSXVertexProgram.h"
 #include "Utilities/Thread.h"
 #include "VulkanAPI.h"
 #include "../VK/VKHelpers.h"
 
+namespace vk
+{
+	class shader_interpreter;
+}
+
 struct VKVertexDecompilerThread : public VertexProgramDecompiler
 {
+	friend class vk::shader_interpreter;
+
 	std::string &m_shader;
 	std::vector<vk::glsl::program_input> inputs;
 	class VKVertexProgram *vk_prog;
+	vk::pipeline_binding_table m_binding_table{};
+
+	struct
+	{
+		bool emulate_conditional_rendering;
+	}
+	m_device_props;
+
 protected:
 	std::string getFloatTypeName(size_t elementCount) override;
 	std::string getIntTypeName(size_t elementCount) override;
@@ -28,8 +43,8 @@ public:
 	VKVertexDecompilerThread(const RSXVertexProgram &prog, std::string& shader, ParamArray&, class VKVertexProgram &dst)
 		: VertexProgramDecompiler(prog)
 		, m_shader(shader)
-		, rsx_vertex_program(prog)
 		, vk_prog(&dst)
+		, rsx_vertex_program(prog)
 	{
 	}
 
@@ -38,7 +53,7 @@ public:
 };
 
 class VKVertexProgram
-{ 
+{
 public:
 	VKVertexProgram();
 	~VKVertexProgram();

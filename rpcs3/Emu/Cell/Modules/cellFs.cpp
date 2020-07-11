@@ -1,5 +1,5 @@
 ﻿#include "stdafx.h"
-#include "Emu/System.h"
+#include "Emu/VFS.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
@@ -443,7 +443,7 @@ error_code cellFsReadWithOffset(ppu_thread& ppu, u32 fd, u64 offset, vm::ptr<voi
 	// Write size read
 	if (nread)
 	{
-		*nread = rc && rc != CELL_EFSSPECIFIC ? 0 : arg->out_size.value();
+		*nread = rc && rc + 0u != CELL_EFSSPECIFIC ? 0 : arg->out_size.value();
 	}
 
 	if (!rc && arg->out_code)
@@ -485,7 +485,7 @@ error_code cellFsWriteWithOffset(ppu_thread& ppu, u32 fd, u64 offset, vm::cptr<v
 	// Write size written
 	if (nwrite)
 	{
-		*nwrite = rc && rc != CELL_EFSSPECIFIC ? 0 : arg->out_size.value();
+		*nwrite = rc && rc + 0u != CELL_EFSSPECIFIC ? 0 : arg->out_size.value();
 	}
 
 	if (!rc && arg->out_code)
@@ -862,12 +862,6 @@ s32 cellFsStReadWaitCallback(u32 fd, u64 size, vm::ptr<void(s32 xfd, u64 xsize)>
 }
 
 using fs_aio_cb_t = vm::ptr<void(vm::ptr<CellFsAio> xaio, s32 error, s32 xid, u64 size)>;
-
-// temporarily
-struct lv2_fs_mount_point
-{
-	std::mutex mutex;
-};
 
 struct fs_aio_thread : ppu_thread
 {

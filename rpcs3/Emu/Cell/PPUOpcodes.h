@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Utilities/BitField.h"
-#include "Utilities/asm.h"
 
 template<typename T, u32 I, u32 N> using ppu_bf_t = bf_t<T, sizeof(T) * 8 - N - I, N>;
 
@@ -62,14 +61,15 @@ union ppu_opcode_t
 	cf_t<ppu_bf_t<s32, 6, 24>, ff_t<u32, 0, 2>> bt24;
 };
 
-inline u64 ppu_rotate_mask(u32 mb, u32 me)
+constexpr u64 ppu_rotate_mask(u32 mb, u32 me)
 {
-	return utils::ror64(~0ull << (63 ^ (me - mb)), mb);
+	const u64 mask = ~0ull << (~(me - mb) & 63);
+	return (mask >> (mb & 63)) | (mask << ((64 - mb) & 63));
 }
 
-inline u32 ppu_decode(u32 inst)
+constexpr u32 ppu_decode(u32 inst)
 {
-	return (inst >> 26 | inst << (32 - 26)) & 0x1ffff; // Rotate + mask
+	return ((inst >> 26) | (inst << 6)) & 0x1ffff; // Rotate + mask
 }
 
 // PPU decoder object. D provides functions. T is function pointer type returned.
@@ -77,7 +77,7 @@ template <typename D, typename T = decltype(&D::UNK)>
 class ppu_decoder
 {
 	// Fast lookup table
-	std::array<T, 0x20000> m_table;
+	std::array<T, 0x20000> m_table{};
 
 	struct instruction_info
 	{
@@ -85,14 +85,14 @@ class ppu_decoder
 		T pointer;
 		u32 magn; // Non-zero for "columns" (effectively, number of most significant bits "eaten")
 
-		instruction_info(u32 v, T p, u32 m = 0)
+		constexpr instruction_info(u32 v, T p, u32 m = 0)
 			: value(v)
 			, pointer(p)
 			, magn(m)
 		{
 		}
 
-		instruction_info(u32 v, const T* p, u32 m = 0)
+		constexpr instruction_info(u32 v, const T* p, u32 m = 0)
 			: value(v)
 			, pointer(*p)
 			, magn(m)
@@ -101,7 +101,7 @@ class ppu_decoder
 	};
 
 	// Fill lookup table
-	void fill_table(u32 main_op, u32 count, u32 sh, std::initializer_list<instruction_info> entries)
+	constexpr void fill_table(u32 main_op, u32 count, u32 sh, std::initializer_list<instruction_info> entries)
 	{
 		if (sh < 11)
 		{
@@ -130,9 +130,12 @@ class ppu_decoder
 	}
 
 public:
-	ppu_decoder()
+	constexpr ppu_decoder()
 	{
-		m_table.fill(&D::UNK);
+		for (auto& x : m_table)
+		{
+			x = &D::UNK;
+		}
 
 		// Main opcodes (field 0..5)
 		fill_table(0x00, 6, -1,
@@ -569,12 +572,6 @@ public:
 			{ 0x32f, &D::FCTIDZ },
 			{ 0x34e, &D::FCFID },
 		});
-	}
-
-	template <typename F>
-	ppu_decoder(F&& init) : ppu_decoder()
-	{
-		init(m_table);
 	}
 
 	const std::array<T, 0x20000>& get_table() const

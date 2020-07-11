@@ -4,6 +4,8 @@
 #include "../Memory/vm_ptr.h"
 #include "Utilities/lockless.h"
 
+LOG_CHANNEL(ppu_log, "PPU");
+
 enum class ppu_cmd : u32
 {
 	null,
@@ -14,14 +16,36 @@ enum class ppu_cmd : u32
 	lle_call, // Load addr and rtoc at *arg or *gpr[arg] and execute
 	hle_call, // Execute function by index (arg)
 	ptr_call, // Execute function by pointer
+	opd_call, // Execute function by provided rtoc and address (unlike lle_call, does not read memory)
 	initialize, // ppu_initialize()
 	sleep,
 	reset_stack, // resets stack address
 };
 
+enum class ppu_join_status : u32
+{
+	joinable = 0,
+	detached = 1,
+	zombie = 2,
+	exited = 3,
+	max = 4, // Values above it indicate PPU id of joining thread
+};
+
 // Formatting helper
 enum class ppu_syscall_code : u64
 {
+};
+
+enum : u32
+{
+	ppu_stack_start_offset = 0x70,
+};
+
+// ppu function descriptor
+struct ppu_func_opd_t
+{
+	be_t<u32> addr;
+	be_t<u32> rtoc;
 };
 
 // ppu_thread constructor argument
@@ -30,7 +54,7 @@ struct ppu_thread_params
 	vm::addr_t stack_addr;
 	u32 stack_size;
 	u32 tls_addr;
-	u32 entry;
+	ppu_func_opd_t entry;
 	u64 arg0;
 	u64 arg1;
 };
@@ -41,11 +65,13 @@ public:
 	static const u32 id_base = 0x01000000; // TODO (used to determine thread type)
 	static const u32 id_step = 1;
 	static const u32 id_count = 2048;
+	static constexpr std::pair<u32, u32> id_invl_range = {12, 12};
 
-	static void on_cleanup(named_thread<ppu_thread>*);
-
-	virtual std::string get_name() const override;
-	virtual std::string dump() const override;
+	virtual std::string dump_all() const override;
+	virtual std::string dump_regs() const override;
+	virtual std::string dump_callstack() const override;
+	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const override;
+	virtual std::string dump_misc() const override;
 	virtual void cpu_task() override final;
 	virtual void cpu_sleep() override;
 	virtual void cpu_mem() override;
@@ -166,11 +192,11 @@ public:
 	u64 rtime{0};
 	u64 rdata{0}; // Reservation data
 
-	atomic_t<u32> prio{0}; // Thread priority (0..3071)
+	atomic_t<s32> prio{0}; // Thread priority (0..3071)
 	const u32 stack_size; // Stack size
 	const u32 stack_addr; // Stack address
 
-	atomic_t<u32> joiner{~0u}; // Joining thread (-1 if detached)
+	atomic_t<ppu_join_status> joiner; // Joining thread or status
 
 	lf_fifo<atomic_t<cmd64>, 127> cmd_queue; // Command queue for asynchronous operations.
 
@@ -180,11 +206,14 @@ public:
 	cmd64 cmd_wait(); // Empty command means caller must return, like true from cpu_thread::check_status().
 	cmd64 cmd_get(u32 index) { return cmd_queue[cmd_queue.peek() + index].load(); }
 
+	const ppu_func_opd_t entry_func;
 	u64 start_time{0}; // Sleep start timepoint
+	alignas(64) u64 syscall_args[4]{0}; // Last syscall arguments stored
 	const char* current_function{}; // Current function name for diagnosis, optimized for speed.
 	const char* last_function{}; // Sticky copy of current_function, is not cleared on function return
 
-	lf_value<std::string> ppu_name; // Thread name
+	// Thread name
+	stx::atomic_cptr<std::string> ppu_tname;
 
 	be_t<u64>* get_stack_arg(s32 i, u64 align = alignof(u64));
 	void exec_task();
@@ -193,6 +222,8 @@ public:
 	static u32 stack_push(u32 size, u32 align_v);
 	static void stack_pop_verbose(u32 addr, u32 size) noexcept;
 };
+
+static_assert(ppu_join_status::max <= ppu_join_status{ppu_thread::id_base});
 
 template<typename T, typename = void>
 struct ppu_gpr_cast_impl
@@ -276,12 +307,12 @@ struct ppu_gpr_cast_impl<vm::_ref_base<T, AT>, void>
 template <>
 struct ppu_gpr_cast_impl<vm::null_t, void>
 {
-	static inline u64 to(const vm::null_t& value)
+	static inline u64 to(const vm::null_t& /*value*/)
 	{
 		return 0;
 	}
 
-	static inline vm::null_t from(const u64 reg)
+	static inline vm::null_t from(const u64 /*reg*/)
 	{
 		return vm::null;
 	}

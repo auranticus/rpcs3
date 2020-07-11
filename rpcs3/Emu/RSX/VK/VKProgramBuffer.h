@@ -120,19 +120,25 @@ struct VKTraits
 		shader_stages[1].module = fragmentProgramData.handle;
 		shader_stages[1].pName = "main";
 
-		VkDynamicState dynamic_state_descriptors[VK_DYNAMIC_STATE_RANGE_SIZE] = {};
+		std::vector<VkDynamicState> dynamic_state_descriptors;
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_SCISSOR);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_LINE_WIDTH);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+		dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+
+		if (vk::get_current_renderer()->get_depth_bounds_support())
+		{
+			dynamic_state_descriptors.push_back(VK_DYNAMIC_STATE_DEPTH_BOUNDS);
+		}
+
 		VkPipelineDynamicStateCreateInfo dynamic_state_info = {};
 		dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_VIEWPORT;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_SCISSOR;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_LINE_WIDTH;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_DEPTH_BOUNDS;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_BLEND_CONSTANTS;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_STENCIL_REFERENCE;
-		dynamic_state_descriptors[dynamic_state_info.dynamicStateCount++] = VK_DYNAMIC_STATE_DEPTH_BIAS;
-		dynamic_state_info.pDynamicStates = dynamic_state_descriptors;
+		dynamic_state_info.pDynamicStates = dynamic_state_descriptors.data();
+		dynamic_state_info.dynamicStateCount = ::size32(dynamic_state_descriptors);
 
 		VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 
@@ -173,7 +179,7 @@ struct VKTraits
 
 		CHECK_RESULT(vkCreateGraphicsPipelines(dev, nullptr, 1, &info, NULL, &pipeline));
 
-		pipeline_storage_type result = std::make_unique<vk::glsl::program>(dev, pipeline, vertexProgramData.uniforms, fragmentProgramData.uniforms);
+		pipeline_storage_type result = std::make_unique<vk::glsl::program>(dev, pipeline, common_pipeline_layout, vertexProgramData.uniforms, fragmentProgramData.uniforms);
 		result->link();
 		return result;
 	}
@@ -181,26 +187,22 @@ struct VKTraits
 
 struct VKProgramBuffer : public program_state_cache<VKTraits>
 {
-	VKProgramBuffer() = default;
-
-	void clear()
+	VKProgramBuffer(decompiler_callback_t callback)
 	{
-		program_state_cache<VKTraits>::clear();
-		m_vertex_shader_cache.clear();
-		m_fragment_shader_cache.clear();
+		notify_pipeline_compiled = callback;
 	}
 
-	u64 get_hash(vk::pipeline_props &props)
+	u64 get_hash(const vk::pipeline_props &props)
 	{
 		return rpcs3::hash_struct<vk::pipeline_props>(props);
 	}
 
-	u64 get_hash(RSXVertexProgram &prog)
+	u64 get_hash(const RSXVertexProgram &prog)
 	{
 		return program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(prog);
 	}
 
-	u64 get_hash(RSXFragmentProgram &prog)
+	u64 get_hash(const RSXFragmentProgram &prog)
 	{
 		return program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(prog);
 	}
@@ -209,7 +211,7 @@ struct VKProgramBuffer : public program_state_cache<VKTraits>
 	void add_pipeline_entry(RSXVertexProgram &vp, RSXFragmentProgram &fp, vk::pipeline_props &props, Args&& ...args)
 	{
 		vp.skip_vertex_input_check = true;
-		get_graphics_pipeline(vp, fp, props, false, std::forward<Args>(args)...);
+		get_graphics_pipeline(vp, fp, props, false, false, std::forward<Args>(args)...);
 	}
 
     void preload_programs(RSXVertexProgram &vp, RSXFragmentProgram &fp)
@@ -222,10 +224,5 @@ struct VKProgramBuffer : public program_state_cache<VKTraits>
 	bool check_cache_missed() const
 	{
 		return m_cache_miss_flag;
-	}
-
-	bool check_program_linked_flag() const
-	{
-		return m_program_compiled_flag;
 	}
 };

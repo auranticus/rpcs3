@@ -1,15 +1,58 @@
-#include "StrFmt.h"
+﻿#include "StrFmt.h"
 #include "BEType.h"
 #include "StrUtil.h"
 #include "cfmt.h"
+#include "util/logs.hpp"
 
 #include <algorithm>
 #include <string_view>
+#include "Thread.h"
 
 #ifdef _WIN32
 #include <Windows.h>
 #else
 #include <errno.h>
+#endif
+
+#ifdef _WIN32
+std::string wchar_to_utf8(wchar_t *src)
+{
+	std::string utf8_string;
+	const auto tmp_size = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
+	utf8_string.resize(tmp_size);
+	WideCharToMultiByte(CP_UTF8, 0, src, -1, utf8_string.data(), tmp_size, nullptr, nullptr);
+	return utf8_string;
+}
+
+std::string wchar_path_to_ansi_path(const std::wstring& src)
+{
+	std::wstring buf_short;
+	std::string buf_final;
+
+	// Get the short path from the wide char path(short path should only contain ansi characters)
+	auto tmp_size = GetShortPathNameW(src.data(), nullptr, 0);
+	buf_short.resize(tmp_size);
+	GetShortPathNameW(src.data(), buf_short.data(), tmp_size);
+
+	// Convert wide char to ansi
+	tmp_size = WideCharToMultiByte(CP_ACP, 0, buf_short.data(), -1, nullptr, 0, nullptr, nullptr);
+	buf_final.resize(tmp_size);
+	WideCharToMultiByte(CP_ACP, 0, buf_short.data(), -1, buf_final.data(), tmp_size, nullptr, nullptr);
+
+	return buf_final;
+}
+
+std::string utf8_path_to_ansi_path(const std::string& src)
+{
+	std::wstring buf_wide;
+
+	// Converts the utf-8 path to wide char
+	const auto tmp_size = MultiByteToWideChar(CP_UTF8, 0, src.c_str(), -1, nullptr, 0);
+	buf_wide.resize(tmp_size);
+	MultiByteToWideChar(CP_UTF8, 0, src.c_str(), -1, buf_wide.data(), tmp_size);
+
+	return wchar_path_to_ansi_path(buf_wide);
+}
 #endif
 
 template <>
@@ -203,7 +246,7 @@ namespace fmt
 {
 	void raw_error(const char* msg)
 	{
-		throw std::runtime_error{msg};
+		thread_ctrl::emergency_exit(msg);
 	}
 
 	void raw_verify_error(const char* msg, const fmt_type_info* sup, u64 arg)
@@ -236,7 +279,7 @@ namespace fmt
 			out += msg;
 		}
 
-		throw std::runtime_error{out};
+		thread_ctrl::emergency_exit(out);
 	}
 
 	void raw_narrow_error(const char* msg, const fmt_type_info* sup, u64 arg)
@@ -256,27 +299,15 @@ namespace fmt
 			out += msg;
 		}
 
-		throw std::range_error{out};
+		thread_ctrl::emergency_exit(out);
 	}
 
-	// Hidden template
-	template <typename T>
 	void raw_throw_exception(const char* fmt, const fmt_type_info* sup, const u64* args)
 	{
 		std::string out;
 		raw_append(out, fmt, sup, args);
-		throw T{out};
+		thread_ctrl::emergency_exit(out);
 	}
-
-	// Explicit instantiations (not exhaustive)
-	template void raw_throw_exception<std::runtime_error>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::logic_error>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::domain_error>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::invalid_argument>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::out_of_range>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::range_error>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::overflow_error>(const char*, const fmt_type_info*, const u64*);
-	template void raw_throw_exception<std::underflow_error>(const char*, const fmt_type_info*, const u64*);
 
 	struct cfmt_src;
 }
@@ -354,7 +385,7 @@ std::string fmt::replace_first(const std::string& src, const std::string& from, 
 {
 	auto pos = src.find(from);
 
-	if (pos == std::string::npos)
+	if (pos == umax)
 	{
 		return src;
 	}
@@ -365,7 +396,7 @@ std::string fmt::replace_first(const std::string& src, const std::string& from, 
 std::string fmt::replace_all(const std::string& src, const std::string& from, const std::string& to)
 {
 	std::string target = src;
-	for (auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + 1))
+	for (auto pos = target.find(from); pos != umax; pos = target.find(from, pos + 1))
 	{
 		target = (pos ? target.substr(0, pos) + to : to) + std::string(target.c_str() + pos + from.length());
 		pos += to.length();
@@ -402,7 +433,7 @@ std::vector<std::string> fmt::split(const std::string& source, std::initializer_
 		result.push_back(source.substr(cursor_begin));
 	}
 
-	return std::move(result);
+	return result;
 }
 
 std::string fmt::trim(const std::string& source, const std::string& values)

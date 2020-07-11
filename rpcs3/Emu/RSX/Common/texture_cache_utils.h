@@ -41,7 +41,8 @@ namespace rsx
 		flush_once = 1
 	};
 
-	struct invalidation_cause {
+	struct invalidation_cause
+	{
 		enum enum_type
 		{
 			invalid = 0,
@@ -550,10 +551,10 @@ namespace rsx
 	class ranged_storage
 	{
 	public:
-		static constexpr u32 block_size = 0x100'0000;
+		static constexpr u32 block_size = 0x1000000;
 		static_assert(block_size % 4096u == 0, "block_size must be a multiple of the page size");
-		static constexpr u32 num_blocks = u32{0x1'0000'0000ull / block_size};
-		static_assert((num_blocks > 0) && (u64{num_blocks} *block_size == 0x1'0000'0000ull), "Invalid block_size/num_blocks");
+		static constexpr u32 num_blocks = u32{0x100000000ull / block_size};
+		static_assert((num_blocks > 0) && (u64{num_blocks} *block_size == 0x100000000ull), "Invalid block_size/num_blocks");
 
 		using section_storage_type = typename traits::section_storage_type;
 		using texture_cache_type   = typename traits::texture_cache_base_type;
@@ -741,14 +742,15 @@ namespace rsx
 
 			// Constructors
 			range_iterator_tmpl() = default; // end iterator
-			explicit range_iterator_tmpl(parent_type &storage, const address_range &_range, section_bounds _bounds, bool _locked_only) :
-				range(_range),
-				bounds(_bounds),
-				block(&storage.block_for(range.start)),
-				unowned_it(block->unowned_begin()),
-				unowned_remaining(true),
-				cur_block_it(block->begin()),
-				locked_only(_locked_only)
+
+			explicit range_iterator_tmpl(parent_type &storage, const address_range &_range, section_bounds _bounds, bool _locked_only)
+				: range(_range)
+				, bounds(_bounds)
+				, block(&storage.block_for(range.start))
+				, unowned_remaining(true)
+				, unowned_it(block->unowned_begin())
+				, cur_block_it(block->begin())
+				, locked_only(_locked_only)
 			{
 				// do a "fake" iteration to ensure the internal state is consistent
 				next(false);
@@ -1341,7 +1343,7 @@ namespace rsx
 
 		void on_miss()
 		{
-			LOG_WARNING(RSX, "Cache miss at address 0x%X. This is gonna hurt...", get_section_base());
+			rsx_log.warning("Cache miss at address 0x%X. This is gonna hurt...", get_section_base());
 			m_tex_cache->on_miss(*derived());
 		}
 
@@ -1418,7 +1420,7 @@ namespace rsx
 			u32 mapped_offset, mapped_length;
 			if (real_pitch != rsx_pitch)
 			{
-				if (LIKELY(!valid_offset))
+				if (!valid_offset) [[likely]]
 				{
 					mapped_offset = 0;
 				}
@@ -1456,7 +1458,7 @@ namespace rsx
 				const auto num_exclusions = flush_exclusions.size();
 				if (num_exclusions > 0)
 				{
-					LOG_WARNING(RSX, "Slow imp_flush path triggered with non-empty flush_exclusions (%d exclusions, %d bytes), performance might suffer", num_exclusions, valid_length);
+					rsx_log.warning("Slow imp_flush path triggered with non-empty flush_exclusions (%d exclusions, %d bytes), performance might suffer", num_exclusions, valid_length);
 				}
 
 				for (s32 remaining = s32(valid_length); remaining > 0; remaining -= rsx_pitch)

@@ -1,10 +1,16 @@
 ﻿#include "vfs_dialog.h"
+#include "vfs_dialog_tab.h"
+#include "gui_settings.h"
+#include "emu_settings_type.h"
 
+#include <QTabWidget>
 #include <QDialogButtonBox>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QVBoxLayout>
 
 #include "Emu/System.h"
+#include "Emu/system_config.h"
 
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
@@ -17,19 +23,19 @@ vfs_dialog::vfs_dialog(std::shared_ptr<gui_settings> guiSettings, std::shared_pt
 	m_emu_settings->LoadSettings();
 
 	// Create tabs
-	vfs_dialog_tab* emulator_tab = new vfs_dialog_tab({ "$(EmulatorDir)", emu_settings::emulatorLocation, gui::fs_emulator_dir_list, &g_cfg.vfs.emulator_dir },
+	vfs_dialog_tab* emulator_tab = new vfs_dialog_tab({ "$(EmulatorDir)", emu_settings_type::emulatorLocation, gui::fs_emulator_dir_list, &g_cfg.vfs.emulator_dir },
 		m_gui_settings, m_emu_settings, this);
 
-	vfs_dialog_tab* dev_hdd0_tab = new vfs_dialog_tab({ "dev_hdd0", emu_settings::dev_hdd0Location, gui::fs_dev_hdd0_list, &g_cfg.vfs.dev_hdd0 },
+	vfs_dialog_tab* dev_hdd0_tab = new vfs_dialog_tab({ "dev_hdd0", emu_settings_type::dev_hdd0Location, gui::fs_dev_hdd0_list, &g_cfg.vfs.dev_hdd0 },
 		m_gui_settings, m_emu_settings, this);
 
-	vfs_dialog_tab* dev_hdd1_tab = new vfs_dialog_tab({ "dev_hdd1", emu_settings::dev_hdd1Location, gui::fs_dev_hdd1_list, &g_cfg.vfs.dev_hdd1 },
+	vfs_dialog_tab* dev_hdd1_tab = new vfs_dialog_tab({ "dev_hdd1", emu_settings_type::dev_hdd1Location, gui::fs_dev_hdd1_list, &g_cfg.vfs.dev_hdd1 },
 		m_gui_settings, m_emu_settings, this);
 
-	vfs_dialog_tab* dev_flash_tab = new vfs_dialog_tab({ "dev_flash", emu_settings::dev_flashLocation, gui::fs_dev_flash_list, &g_cfg.vfs.dev_flash },
+	vfs_dialog_tab* dev_flash_tab = new vfs_dialog_tab({ "dev_flash", emu_settings_type::dev_flashLocation, gui::fs_dev_flash_list, &g_cfg.vfs.dev_flash },
 		m_gui_settings, m_emu_settings, this);
 
-	vfs_dialog_tab* dev_usb000_tab = new vfs_dialog_tab({ "dev_usb000", emu_settings::dev_usb000Location, gui::fs_dev_usb000_list, &g_cfg.vfs.dev_usb000 },
+	vfs_dialog_tab* dev_usb000_tab = new vfs_dialog_tab({ "dev_usb000", emu_settings_type::dev_usb000Location, gui::fs_dev_usb000_list, &g_cfg.vfs.dev_usb000 },
 		m_gui_settings, m_emu_settings, this);
 
 	tabs->addTab(emulator_tab, "$(EmulatorDir)");
@@ -43,7 +49,7 @@ vfs_dialog::vfs_dialog(std::shared_ptr<gui_settings> guiSettings, std::shared_pt
 	buttons->button(QDialogButtonBox::RestoreDefaults)->setText(tr("Reset Directories"));
 	buttons->button(QDialogButtonBox::Save)->setDefault(true);
 
-	connect(buttons, &QDialogButtonBox::clicked, [=](QAbstractButton* button)
+	connect(buttons, &QDialogButtonBox::clicked, [=, this](QAbstractButton* button)
 	{
 		if (button == buttons->button(QDialogButtonBox::RestoreDefaults))
 		{

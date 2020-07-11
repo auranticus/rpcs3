@@ -26,7 +26,7 @@ struct sys_event_flag_attribute_t
 
 	union
 	{
-		u64 name_u64;
+		nse_t<u64, 1> name_u64;
 		char name[sizeof(u64)];
 	};
 };
@@ -35,7 +35,7 @@ struct lv2_event_flag final : lv2_obj
 {
 	static const u32 id_base = 0x98000000;
 
-	const u32 protocol;
+	const lv2_protocol protocol;
 	const u32 shared;
 	const u64 key;
 	const s32 flags;
@@ -48,7 +48,7 @@ struct lv2_event_flag final : lv2_obj
 	std::deque<cpu_thread*> sq;
 
 	lv2_event_flag(u32 protocol, u32 shared, u64 key, s32 flags, s32 type, u64 name, u64 pattern)
-		: protocol(protocol)
+		: protocol{protocol}
 		, shared(shared)
 		, key(key)
 		, flags(flags)

@@ -81,7 +81,7 @@ namespace vk
 			+ kernel +
 			"}\n";
 
-			LOG_NOTICE(RSX, "Compute shader:\n%s", m_src);
+			rsx_log.notice("Compute shader:\n%s", m_src);
 		}
 
 		std::vector<std::pair<VkDescriptorType, u8>> get_descriptor_layout() override
@@ -117,8 +117,8 @@ namespace vk
 
 		void bind_resources() override
 		{
-			auto msaa_view = multisampled->get_view(0xDEADBEEF, rsx::default_remap_vector);
-			auto resolved_view = resolve->get_view(0xAAE4, rsx::default_remap_vector);
+			auto msaa_view = multisampled->get_view(VK_REMAP_VIEW_MULTISAMPLED, rsx::default_remap_vector);
+			auto resolved_view = resolve->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector);
 			m_program->bind_uniform({ VK_NULL_HANDLE, msaa_view->value, multisampled->current_layout }, "multisampled", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, m_descriptor_set);
 			m_program->bind_uniform({ VK_NULL_HANDLE, resolved_view->value, resolve->current_layout }, "resolve", VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, m_descriptor_set);
 		}
@@ -133,17 +133,20 @@ namespace vk
 			const u32 invocations_x = align(resolve_image->width(), cs_wave_x) / cs_wave_x;
 			const u32 invocations_y = align(resolve_image->height(), cs_wave_y) / cs_wave_y;
 
-			compute_task::run(cmd, invocations_x, invocations_y);
+			compute_task::run(cmd, invocations_x, invocations_y, 1);
 		}
 	};
 
 	struct cs_resolve_task : cs_resolve_base
 	{
-		cs_resolve_task(const std::string& format_prefix)
+		cs_resolve_task(const std::string& format_prefix, bool bgra_swap = false)
 		{
+			// Allow rgba->bgra transformation for old GeForce cards
+			const std::string swizzle = bgra_swap? ".bgra" : "";
+
 			std::string kernel =
 			"	vec4 aa_sample = imageLoad(multisampled, aa_coords, sample_index);\n"
-			"	imageStore(resolve, resolve_coords, aa_sample);\n";
+			"	imageStore(resolve, resolve_coords, aa_sample" + swizzle + ");\n";
 
 			build(kernel, format_prefix, 0);
 		}
@@ -151,11 +154,14 @@ namespace vk
 
 	struct cs_unresolve_task : cs_resolve_base
 	{
-		cs_unresolve_task(const std::string& format_prefix)
+		cs_unresolve_task(const std::string& format_prefix, bool bgra_swap = false)
 		{
+			// Allow rgba->bgra transformation for old GeForce cards
+			const std::string swizzle = bgra_swap? ".bgra" : "";
+
 			std::string kernel =
 			"	vec4 resolved_sample = imageLoad(resolve, resolve_coords);\n"
-			"	imageStore(multisampled, aa_coords, sample_index, resolved_sample);\n";
+			"	imageStore(multisampled, aa_coords, sample_index, resolved_sample" + swizzle + ");\n";
 
 			build(kernel, format_prefix, 1);
 		}
@@ -206,7 +212,7 @@ namespace vk
 					fs_src += kernel +
 				"}\n";
 
-			LOG_NOTICE(RSX, "Resolve shader:\n%s", fs_src);
+			rsx_log.notice("Resolve shader:\n%s", fs_src);
 		}
 
 		std::vector<VkPushConstantRange> get_push_constants() override
@@ -264,7 +270,7 @@ namespace vk
 		void run(vk::command_buffer& cmd, vk::viewable_image* msaa_image, vk::viewable_image* resolve_image, VkRenderPass render_pass)
 		{
 			update_sample_configuration(msaa_image);
-			auto src_view = msaa_image->get_view(0xDEADBEEF, rsx::default_remap_vector);
+			auto src_view = msaa_image->get_view(VK_REMAP_VIEW_MULTISAMPLED, rsx::default_remap_vector);
 
 			overlay_pass::run(
 				cmd,
@@ -295,7 +301,7 @@ namespace vk
 			renderpass_config.set_multisample_shading_rate(1.f);
 			update_sample_configuration(msaa_image);
 
-			auto src_view = resolve_image->get_view(0xAAE4, rsx::default_remap_vector);
+			auto src_view = resolve_image->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector);
 
 			overlay_pass::run(
 				cmd,
@@ -336,9 +342,9 @@ namespace vk
 				{"usampler2DMS fs0"});
 		}
 
-		void get_dynamic_state_entries(VkDynamicState* state_descriptors, VkPipelineDynamicStateCreateInfo& info) override
+		void get_dynamic_state_entries(std::vector<VkDynamicState>& state_descriptors) override
 		{
-			state_descriptors[info.dynamicStateCount++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
+			state_descriptors.push_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
 		}
 
 		void emit_geometry(vk::command_buffer& cmd) override
@@ -357,7 +363,7 @@ namespace vk
 		void run(vk::command_buffer& cmd, vk::viewable_image* msaa_image, vk::viewable_image* resolve_image, VkRenderPass render_pass)
 		{
 			update_sample_configuration(msaa_image);
-			auto stencil_view = msaa_image->get_view(0xDEADBEEF, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
+			auto stencil_view = msaa_image->get_view(VK_REMAP_VIEW_MULTISAMPLED, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
 
 			region.rect.extent.width = resolve_image->width();
 			region.rect.extent.height = resolve_image->height();
@@ -401,9 +407,9 @@ namespace vk
 				{ "usampler2D fs0" });
 		}
 
-		void get_dynamic_state_entries(VkDynamicState* state_descriptors, VkPipelineDynamicStateCreateInfo& info) override
+		void get_dynamic_state_entries(std::vector<VkDynamicState>& state_descriptors) override
 		{
-			state_descriptors[info.dynamicStateCount++] = VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
+			state_descriptors.push_back(VK_DYNAMIC_STATE_STENCIL_WRITE_MASK);
 		}
 
 		void emit_geometry(vk::command_buffer& cmd) override
@@ -425,7 +431,7 @@ namespace vk
 			renderpass_config.set_multisample_shading_rate(1.f);
 			update_sample_configuration(msaa_image);
 
-			auto stencil_view = resolve_image->get_view(0xAAE4, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
+			auto stencil_view = resolve_image->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
 
 			region.rect.extent.width = resolve_image->width();
 			region.rect.extent.height = resolve_image->height();
@@ -469,8 +475,8 @@ namespace vk
 		void run(vk::command_buffer& cmd, vk::viewable_image* msaa_image, vk::viewable_image* resolve_image, VkRenderPass render_pass)
 		{
 			update_sample_configuration(msaa_image);
-			auto depth_view = msaa_image->get_view(0xDEADBEEF, rsx::default_remap_vector, VK_IMAGE_ASPECT_DEPTH_BIT);
-			auto stencil_view = msaa_image->get_view(0xDEADBEEF, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
+			auto depth_view = msaa_image->get_view(VK_REMAP_VIEW_MULTISAMPLED, rsx::default_remap_vector, VK_IMAGE_ASPECT_DEPTH_BIT);
+			auto stencil_view = msaa_image->get_view(VK_REMAP_VIEW_MULTISAMPLED, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
 
 			overlay_pass::run(
 				cmd,
@@ -514,8 +520,8 @@ namespace vk
 			renderpass_config.set_multisample_shading_rate(1.f);
 			update_sample_configuration(msaa_image);
 
-			auto depth_view = resolve_image->get_view(0xAAE4, rsx::default_remap_vector, VK_IMAGE_ASPECT_DEPTH_BIT);
-			auto stencil_view = resolve_image->get_view(0xAAE4, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
+			auto depth_view = resolve_image->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector, VK_IMAGE_ASPECT_DEPTH_BIT);
+			auto stencil_view = resolve_image->get_view(VK_REMAP_IDENTITY, rsx::default_remap_vector, VK_IMAGE_ASPECT_STENCIL_BIT);
 
 			overlay_pass::run(
 				cmd,

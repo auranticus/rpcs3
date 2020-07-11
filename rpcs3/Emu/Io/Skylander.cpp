@@ -2,7 +2,7 @@
 #include "Skylander.h"
 #include "Emu/Cell/lv2/sys_usbd.h"
 
-LOG_CHANNEL(skylander_log);
+LOG_CHANNEL(skylander_log, "skylander");
 
 sky_portal g_skylander;
 
@@ -85,6 +85,11 @@ void usb_device_skylander::control_transfer(u8 bmRequestType, u8 bRequest, u16 w
 				// Set LEDs colour
 				verify(HERE), buf_size == 4;
 				break;
+			case 'M':
+				q_result[0] = 0x4D;
+				q_result[1] = buf[1];
+				q_queries.push(q_result);
+				break;
 			case 'Q':
 				// Queries a block
 				verify(HERE), buf_size == 3;
@@ -150,7 +155,7 @@ void usb_device_skylander::interrupt_transfer(u32 buf_size, u8* buf, u32 endpoin
 	// Interrupt transfers are slow(6ms, TODO accurate measurement)
 	transfer->expected_time = get_timestamp() + 6000;
 
-	if (q_queries.size())
+	if (!q_queries.empty())
 	{
 		memcpy(buf, q_queries.front().data(), 0x20);
 		q_queries.pop();

@@ -1,8 +1,10 @@
 ﻿#include "headless_application.h"
 
-#include "Emu/System.h"
-
 #include "Emu/RSX/GSRender.h"
+#include "Emu/Cell/Modules/cellMsgDialog.h"
+#include "Emu/Cell/Modules/cellOskDialog.h"
+#include "Emu/Cell/Modules/cellSaveData.h"
+#include "Emu/Cell/Modules/sceNpTrophy.h"
 
 #include <clocale>
 
@@ -14,7 +16,7 @@ headless_application::headless_application(int& argc, char** argv) : QCoreApplic
 void headless_application::Init()
 {
 	// Force init the emulator
-	InitializeEmulator("1", true); // TODO: get user from cli args if possible
+	InitializeEmulator("1", true, false); // TODO: get user from cli args if possible
 
 	// Create callbacks from the emulator, which reference the handlers.
 	InitializeCallbacks();
@@ -37,14 +39,17 @@ void headless_application::InitializeCallbacks()
 {
 	EmuCallbacks callbacks = CreateCallbacks();
 
-	callbacks.exit = [this](bool force_quit)
+	callbacks.exit = [this](bool force_quit) -> bool
 	{
 		if (force_quit)
 		{
 			quit();
+			return true;
 		}
+
+		return false;
 	};
-	callbacks.call_after = [=](std::function<void()> func)
+	callbacks.call_after = [=, this](std::function<void()> func)
 	{
 		RequestCallAfter(std::move(func));
 	};
@@ -55,7 +60,7 @@ void headless_application::InitializeCallbacks()
 	callbacks.get_save_dialog                = []() -> std::unique_ptr<SaveDialogBase> { return std::unique_ptr<SaveDialogBase>(); };
 	callbacks.get_trophy_notification_dialog = []() -> std::unique_ptr<TrophyNotificationBase> { return std::unique_ptr<TrophyNotificationBase>(); };
 
-	callbacks.on_run    = []() {};
+	callbacks.on_run    = [](bool /*start_playtime*/) {};
 	callbacks.on_pause  = []() {};
 	callbacks.on_resume = []() {};
 	callbacks.on_stop   = []() {};

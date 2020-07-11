@@ -1,5 +1,4 @@
 ﻿#include "stdafx.h"
-#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
@@ -7,7 +6,7 @@
 
 #include "cellMouse.h"
 
-extern logs::channel sys_io;
+LOG_CHANNEL(sys_io);
 
 template<>
 void fmt_class_string<CellMouseError>::format(std::string& out, u64 arg)
@@ -119,6 +118,8 @@ error_code cellMouseGetInfo(vm::ptr<CellMouseInfo> info)
 		return CELL_MOUSE_ERROR_INVALID_PARAMETER;
 	}
 
+	std::memset(info.get_ptr(), 0, info.size());
+
 	const MouseInfo& current_info = handler->GetInfo();
 	info->max_connect = current_info.max_connect;
 	info->now_connect = current_info.now_connect;
@@ -192,13 +193,14 @@ error_code cellMouseGetData(u32 port_no, vm::ptr<CellMouseData> data)
 		return CELL_MOUSE_ERROR_NO_DEVICE;
 	}
 
+	std::memset(data.get_ptr(), 0, data.size());
+
 	// TODO: check if (current_info.mode[port_no] != CELL_MOUSE_INFO_TABLET_MOUSE_MODE) has any impact
 
 	MouseDataList& data_list = handler->GetDataList(port_no);
 
 	if (data_list.empty())
 	{
-		*data = {};
 		return CELL_OK;
 	}
 
@@ -243,7 +245,7 @@ error_code cellMouseGetDataList(u32 port_no, vm::ptr<CellMouseDataList> data)
 	// TODO: check if (current_info.mode[port_no] != CELL_MOUSE_INFO_TABLET_MOUSE_MODE) has any impact
 
 	auto& list = handler->GetDataList(port_no);
-	data->list_num = std::min((u32)CELL_MOUSE_MAX_DATA_LIST_NUM, (u32)list.size());
+	data->list_num = std::min<u32>(CELL_MOUSE_MAX_DATA_LIST_NUM, static_cast<u32>(list.size()));
 
 	int i = 0;
 	for (auto it = list.begin(); it != list.end() && i < CELL_MOUSE_MAX_DATA_LIST_NUM; ++it, ++i)
@@ -324,7 +326,7 @@ error_code cellMouseGetTabletDataList(u32 port_no, vm::ptr<CellMouseTabletDataLi
 	// TODO: check if (current_info.mode[port_no] != CELL_MOUSE_INFO_TABLET_TABLET_MODE) has any impact
 
 	auto& list = handler->GetTabletDataList(port_no);
-	data->list_num = std::min((u32)CELL_MOUSE_MAX_DATA_LIST_NUM, (u32)list.size());
+	data->list_num = std::min<u32>(CELL_MOUSE_MAX_DATA_LIST_NUM, static_cast<u32>(list.size()));
 
 	int i = 0;
 	for (auto it = list.begin(); it != list.end() && i < CELL_MOUSE_MAX_DATA_LIST_NUM; ++it, ++i)

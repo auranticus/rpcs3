@@ -1,21 +1,31 @@
 ﻿#pragma once
 
-#ifndef _WIN32
-#error "XAudio2 can only be built on Windows."
-#endif
+#ifdef _WIN32
 
 #include "Emu/Audio/AudioBackend.h"
 
-#include <xaudio2redist.h>
-#include <wrl/client.h>
 
-
-class XAudio2Backend final : public AudioBackend
+class XAudio2Backend : public AudioBackend
 {
+public:
+	class XAudio2Library
+	{
+	public:
+		virtual void play() = 0;
+		virtual void flush() = 0;
+		virtual void stop() = 0;
+		virtual void open() = 0;
+		virtual bool is_playing() = 0;
+		virtual bool add(const void*, u32) = 0;
+		virtual u64 enqueued_samples() = 0;
+		virtual f32 set_freq_ratio(f32) = 0;
+	};
+
 private:
-	Microsoft::WRL::ComPtr<IXAudio2> m_xaudio2_instance;
-	IXAudio2MasteringVoice* m_master_voice{};
-	IXAudio2SourceVoice* m_source_voice{};
+	static XAudio2Library* xa27_init(void*);
+	static XAudio2Library* xa28_init(void*);
+
+	std::unique_ptr<XAudio2Library> lib = nullptr;
 
 public:
 	XAudio2Backend();
@@ -25,8 +35,6 @@ public:
 
 	static const u32 capabilities = PLAY_PAUSE_FLUSH | IS_PLAYING | GET_NUM_ENQUEUED_SAMPLES | SET_FREQUENCY_RATIO;
 	virtual u32 GetCapabilities() const override { return capabilities;	};
-
-	virtual bool Initialized() const override { return m_xaudio2_instance != nullptr; }
 
 	virtual void Open(u32 /* num_buffers */) override;
 	virtual void Close() override;
@@ -41,3 +49,5 @@ public:
 	virtual u64 GetNumEnqueuedSamples() override;
 	virtual f32 SetFrequencyRatio(f32 new_ratio) override;
 };
+
+#endif

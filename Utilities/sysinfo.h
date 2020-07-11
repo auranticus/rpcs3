@@ -41,19 +41,9 @@ namespace utils
 
 	bool has_mpx();
 
-	bool has_avx512();
+	bool has_512();
 
 	bool has_xop();
-
-	bool has_clwb();
-
-	bool has_invariant_tsc();
-
-	bool has_fma3();
-
-	bool has_fma4();
-
-	std::string get_cpu_brand();
 
 	std::string get_system_info();
 
@@ -62,8 +52,4 @@ namespace utils
 	std::string get_OS_version();
 
 	ullong get_tsc_freq();
-
-	u64 get_total_memory();
-
-	u32 get_thread_count();
 }

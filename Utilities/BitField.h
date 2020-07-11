@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "types.h"
+#include <limits>
 
 template<typename T, uint N>
 struct bf_base
@@ -11,12 +12,12 @@ struct bf_base
 
 	// Datatype bitsize
 	static constexpr uint bitmax = sizeof(T) * 8; static_assert(N - 1 < bitmax, "bf_base<> error: N out of bounds");
-
+	
 	// Field bitsize
 	static constexpr uint bitsize = N;
 
 	// All ones mask
-	static constexpr utype mask1 = static_cast<utype>(~static_cast<utype>(0));
+	static constexpr utype mask1 = std::numeric_limits<utype>::max();
 
 	// Value mask
 	static constexpr utype vmask = mask1 >> (bitmax - bitsize);
@@ -96,7 +97,7 @@ struct bf_t : bf_base<T, N>
 	// Optimized bool conversion (must be removed if inappropriate)
 	explicit constexpr operator bool() const
 	{
-		return unshifted() != 0u;
+		return unshifted() != 0;
 	}
 
 	// Store bitfield value
@@ -222,7 +223,7 @@ struct cf_t<void>
 	}
 
 	template<typename T>
-	static constexpr T insert(T /*value*/)
+	static constexpr T insert(T value)
 	{
 		return 0;
 	}

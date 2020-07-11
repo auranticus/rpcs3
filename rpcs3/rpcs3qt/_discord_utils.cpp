@@ -1,5 +1,4 @@
-﻿#ifdef WITH_DISCORD_RPC
-#include "stdafx.h"
+#ifdef WITH_DISCORD_RPC
 #include "_discord_utils.h"
 #include "discord_rpc.h"
 #include "discord_register.h"

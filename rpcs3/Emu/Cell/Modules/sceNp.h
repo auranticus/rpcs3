@@ -9,14 +9,14 @@
 error_code sceNpInit(u32 poolsize, vm::ptr<void> poolptr);
 error_code sceNpTerm();
 
-using np_in_addr_t   = u32;
-using np_in_port_t   = u16;
-using np_sa_family_t = u8;
-using np_socklen_t   = u32;
+using in_addr_t = u32;
+using in_port_t = u16;
+using sa_family_t = u8;
+using socklen_t = u32;
 
-struct np_in_addr
+struct in_addr
 {
-	np_in_addr_t np_s_addr; // TODO: alignment?
+	in_addr_t s_addr; // TODO: alignment?
 };
 
 using sys_memory_container_t = u32;
@@ -244,6 +244,7 @@ enum SceNpError : u32
 	SCE_NP_COMMUNITY_SERVER_ERROR_UNSPECIFIED                         = 0x8002a4ff,
 
 	// DRM
+	SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND                  = 0x80029521,
 	SCE_NP_DRM_ERROR_OUT_OF_MEMORY                      = 0x80029501,
 	SCE_NP_DRM_ERROR_INVALID_PARAM                      = 0x80029502,
 	SCE_NP_DRM_ERROR_SERVER_RESPONSE                    = 0x80029509,
@@ -259,32 +260,10 @@ enum SceNpError : u32
 	SCE_NP_DRM_ERROR_DIFFERENT_DRM_TYPE                 = 0x8002951d,
 	SCE_NP_DRM_ERROR_SERVICE_NOT_STARTED                = 0x8002951e,
 	SCE_NP_DRM_ERROR_BUSY                               = 0x80029520,
-	SCE_NP_DRM_ERROR_LICENSE_NOT_FOUND                  = 0x80029521,
 	SCE_NP_DRM_ERROR_IO                                 = 0x80029525,
 	SCE_NP_DRM_ERROR_FORMAT                             = 0x80029530,
 	SCE_NP_DRM_ERROR_FILENAME                           = 0x80029533,
 	SCE_NP_DRM_ERROR_K_LICENSEE                         = 0x80029534,
-
-	// DRM Server
-	SCE_NP_DRM_SERVER_ERROR_SERVICE_IS_END                 = 0x80029700,
-	SCE_NP_DRM_SERVER_ERROR_SERVICE_STOP_TEMPORARILY       = 0x80029701,
-	SCE_NP_DRM_SERVER_ERROR_SERVICE_IS_BUSY                = 0x80029702,
-	SCE_NP_DRM_SERVER_ERROR_INVALID_USER_CREDENTIAL        = 0x80029721,
-	SCE_NP_DRM_SERVER_ERROR_INVALID_PRODUCT_ID             = 0x80029722,
-	SCE_NP_DRM_SERVER_ERROR_ACCOUNT_IS_CLOSED              = 0x80029730,
-	SCE_NP_DRM_SERVER_ERROR_ACCOUNT_IS_SUSPENDED           = 0x80029731,
-	SCE_NP_DRM_SERVER_ERROR_ACTIVATED_CONSOLE_IS_FULL      = 0x80029750,
-	SCE_NP_DRM_SERVER_ERROR_CONSOLE_NOT_ACTIVATED          = 0x80029751,
-	SCE_NP_DRM_SERVER_ERROR_PRIMARY_CONSOLE_CANNOT_CHANGED = 0x80029752,
-	SCE_NP_DRM_SERVER_ERROR_UNKNOWN                        = 0x80029780,
-
-	// DRM Install
-	SCE_NP_DRM_INSTALL_ERROR_FORMAT      = 0x80029563,
-	SCE_NP_DRM_INSTALL_ERROR_CHECK       = 0x80029564,
-	SCE_NP_DRM_INSTALL_ERROR_UNSUPPORTED = 0x80029566,
-
-	// Game purchase processing
-	GAME_ERR_NOT_XMBBUY_CONTENT = 0x80028F81,
 
 	// Auth
 	SCE_NP_AUTH_EINVAL            = 0x8002a002,
@@ -501,7 +480,7 @@ enum SceNpCustomMenuActionMask : u32
 enum
 {
 	SCE_NP_CUSTOM_MENU_INDEX_BITS       = (sizeof(SceNpCustomMenuIndexMask) * 8),
-	SCE_NP_CUSTOM_MENU_INDEX_BITS_ALL   = (static_cast<SceNpCustomMenuIndexMask>(-1)),
+	SCE_NP_CUSTOM_MENU_INDEX_BITS_ALL   = ((SceNpCustomMenuIndexMask) - 1),
 	SCE_NP_CUSTOM_MENU_INDEX_BITS_SHIFT = 5,
 	SCE_NP_CUSTOM_MENU_INDEX_BITS_MASK  = (SCE_NP_CUSTOM_MENU_INDEX_BITS - 1),
 	SCE_NP_CUSTOM_MENU_INDEX_BITS_MAX   = 127,
@@ -521,9 +500,7 @@ enum
 
 enum
 {
-	SCE_NP_DRM_OPEN_FLAG               = 2,
-	SCE_NP_DRM_EXITSPAWN2_EXIT_WO_FINI = 0x4000000000000000ULL,
-	SCE_NP_DRM_TIME_INFO_ENDLESS       = 0x7FFFFFFFFFFFFFFFULL
+	SCE_NP_DRM_OPEN_FLAG = 2
 };
 
 // NP Manager Utility statuses
@@ -610,7 +587,7 @@ enum SceNpBasicMessageSubType : u16
 };
 
 // Applicable features of messages
-#define SCE_NP_BASIC_MESSAGE_FEATURES_EXP_MIN(min) (((static_cast<u32>(min) << 16) | (0 << 15)) & 0xFFFF8000)
+#define SCE_NP_BASIC_MESSAGE_FEATURES_EXP_MIN(min) ((((u32)min << 16) | (0 << 15)) & 0xFFFF8000)
 enum SceNpBasicMessageFeatures : u32
 {
 	SCE_NP_BASIC_MESSAGE_FEATURES_MULTI_RECEIPIENTS = 0x00000001,
@@ -818,8 +795,7 @@ enum : SceNpPlatformType
 {
 	SCE_NP_PLATFORM_TYPE_NONE = 0,
 	SCE_NP_PLATFORM_TYPE_PS3  = 1,
-	SCE_NP_PLATFORM_TYPE_VITA = 2,
-	SCE_NP_PLATFORM_TYPE_PS4 = 3, // Note: unknown on which fw versions it appears, but sdk version is unchecked
+	SCE_NP_PLATFORM_TYPE_VITA = 2
 };
 
 enum
@@ -868,19 +844,9 @@ struct SceNpOnlineId
 struct SceNpId
 {
 	SceNpOnlineId handle;
-
-	union
-	{
-		// This field (system reserved) seems to be combined of two parts
-		// The second is used by sceNpUtilSetPlatformType and sceNpUtilGetPlatformType
-		u8 opt[8];
-		nse_t<u32, 1> unk1[2];
-	};
-
+	u8 opt[8];
 	u8 reserved[8];
 };
-
-CHECK_SIZE_ALIGN(SceNpId, 0x24, 1);
 
 // Online Name structure
 struct SceNpOnlineName
@@ -1144,8 +1110,8 @@ union SceNpSignalingConnectionInfo
 	SceNpId npId;
 	struct
 	{
-		np_in_addr addr; // in_addr
-		np_in_port_t port; // in_port_t
+		be_t<u32> addr; // in_addr
+		be_t<u16> port; // in_port_t
 	} address;
 	be_t<u32> packet_loss;
 };
@@ -1321,3 +1287,22 @@ using SceNpMatchingGUIHandler = void(u32 ctx_id, s32 event, s32 error_code, vm::
 using SceNpProfileResultHandler = s32(s32 result, vm::ptr<void> arg);
 
 using SceNpManagerSubSigninCallback = void(s32 result, vm::ptr<SceNpId> npId, vm::ptr<void> cb_arg);
+
+// fxm objects
+
+struct sce_np_manager
+{
+	std::atomic<bool> is_initialized = false;
+};
+
+struct sce_np_lookup_manager
+{
+	std::atomic<bool> is_initialized = false;
+};
+
+struct sce_np_score_manager
+{
+	std::atomic<bool> is_initialized = false;
+};
+
+extern s32 g_psn_connection_status;

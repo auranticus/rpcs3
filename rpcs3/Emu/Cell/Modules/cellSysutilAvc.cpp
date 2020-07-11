@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "Emu/Cell/PPUModule.h"
 
-LOG_CHANNEL(cellSysutil);
+extern logs::channel cellSysutil;
 
 s32 cellSysutilAvcByeRequest()
 {

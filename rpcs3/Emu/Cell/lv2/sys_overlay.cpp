@@ -1,7 +1,7 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 
 #include "Emu/Memory/vm_ptr.h"
-#include "Emu/VFS.h"
+#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Crypto/unself.h"
 #include "Crypto/unedat.h"
@@ -19,30 +19,25 @@ LOG_CHANNEL(sys_overlay);
 
 static error_code overlay_load_module(vm::ptr<u32> ovlmid, const std::string& vpath, u64 flags, vm::ptr<u32> entry, fs::file src = {})
 {
+	const std::string path = vfs::get(vpath);
+
 	if (!src)
 	{
-		auto [fs_error, ppath, lv2_file] = lv2_file::open(vpath, 0, 0);
-
-		if (fs_error)
-		{
-			return {fs_error, vpath};
-		}
-
-		src = std::move(lv2_file);
+		src.open(path);
 	}
 
-	const ppu_exec_object obj = decrypt_self(std::move(src), g_fxo->get<loaded_npdrm_keys>()->devKlic.load()._bytes);
+	const ppu_exec_object obj = decrypt_self(std::move(src), g_fxo->get<loaded_npdrm_keys>()->devKlic.data());
 
 	if (obj != elf_error::ok)
 	{
 		return {CELL_ENOEXEC, obj.operator elf_error()};
 	}
 
-	const auto ovlm = ppu_load_overlay(obj, vfs::get(vpath));
+	const auto ovlm = ppu_load_overlay(obj, path);
 
 	ppu_initialize(*ovlm);
 
-	sys_overlay.success(u8"Loaded overlay: “%s” (id=0x%x)", vpath, idm::last_id());
+	sys_overlay.success("Loaded overlay: %s", vpath);
 
 	*ovlmid = idm::last_id();
 	*entry  = ovlm->entry;
@@ -78,7 +73,7 @@ error_code sys_overlay_load_module_by_fd(vm::ptr<u32> ovlmid, u32 fd, u64 offset
 		return CELL_ENOSYS;
 	}
 
-	if (static_cast<s64>(offset) < 0)
+	if ((s64)offset < 0)
 	{
 		return CELL_EINVAL;
 	}
@@ -96,12 +91,6 @@ error_code sys_overlay_load_module_by_fd(vm::ptr<u32> ovlmid, u32 fd, u64 offset
 error_code sys_overlay_unload_module(u32 ovlmid)
 {
 	sys_overlay.warning("sys_overlay_unload_module(ovlmid=0x%x)", ovlmid);
-
-	if (!g_ps3_process_info.ppc_seg)
-	{
-		// Process not permitted
-		return CELL_ENOSYS;
-	}
 
 	const auto _main = idm::withdraw<lv2_obj, lv2_overlay>(ovlmid);
 

@@ -1,8 +1,7 @@
 ﻿#include "sysinfo.h"
 #include "StrFmt.h"
 #include "File.h"
-#include "Emu/system_config.h"
-#include "Thread.h"
+#include "Emu/System.h"
 
 #ifdef _WIN32
 #include "windows.h"
@@ -57,10 +56,10 @@ bool utils::has_mpx()
 	return g_value;
 }
 
-bool utils::has_avx512()
+bool utils::has_512()
 {
 	// Check AVX512F, AVX512CD, AVX512DQ, AVX512BW, AVX512VL extensions (Skylake-X level support)
-	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(7, 0)[1] & 0xd0030000) == 0xd0030000 && (get_cpuid(1, 0)[2] & 0x0C000000) == 0x0C000000 && (get_xgetbv(0) & 0xe6) == 0xe6;
+	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(7, 0)[1] & 0xd0030000) == 0xd0030000 && (get_cpuid(1,0)[2] & 0x0C000000) == 0x0C000000 && (get_xgetbv(0) & 0xe6) == 0xe6;
 	return g_value;
 }
 
@@ -70,32 +69,9 @@ bool utils::has_xop()
 	return g_value;
 }
 
-bool utils::has_clwb()
+std::string utils::get_system_info()
 {
-	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(7, 0)[1] & 0x1000000) == 0x1000000;
-	return g_value;
-}
-
-bool utils::has_invariant_tsc()
-{
-	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000007, 0)[3] & 0x100) == 0x100;
-	return g_value;
-}
-
-bool utils::has_fma3()
-{
-	static const bool g_value = get_cpuid(0, 0)[0] >= 0x1 && get_cpuid(1, 0)[2] & 0x1000;
-	return g_value;
-}
-
-bool utils::has_fma4()
-{
-	static const bool g_value = get_cpuid(0, 0)[0] >= 0x7 && (get_cpuid(0x80000001, 0)[2] & 0x10000) == 0x10000;
-	return g_value;
-}
-
-std::string utils::get_cpu_brand()
-{
+	std::string result;
 	std::string brand;
 
 	if (get_cpuid(0x80000000, 0)[0] >= 0x80000004)
@@ -119,22 +95,24 @@ std::string utils::get_cpu_brand()
 		brand.erase(brand.begin() + found);
 	}
 
-	return brand;
-}
-
-std::string utils::get_system_info()
-{
-	std::string result;
-
-	const std::string brand = get_cpu_brand();
-	const u64 mem_total = get_total_memory();
-	const u32 num_proc = get_thread_count();
+#ifdef _WIN32
+	::SYSTEM_INFO sysInfo;
+	::GetNativeSystemInfo(&sysInfo);
+	::MEMORYSTATUSEX memInfo;
+	memInfo.dwLength = sizeof(memInfo);
+	::GlobalMemoryStatusEx(&memInfo);
+	const u32 num_proc = sysInfo.dwNumberOfProcessors;
+	const u64 mem_total = memInfo.ullTotalPhys;
+#else
+	const u32 num_proc = ::sysconf(_SC_NPROCESSORS_ONLN);
+	const u64 mem_total = ::sysconf(_SC_PHYS_PAGES) * ::sysconf(_SC_PAGE_SIZE);
+#endif
 
 	fmt::append(result, "%s | %d Threads | %.2f GiB RAM", brand, num_proc, mem_total / (1024.0f * 1024 * 1024));
 
 	if (const ullong tsc_freq = get_tsc_freq())
 	{
-		fmt::append(result, " | TSC: %.03fGHz", tsc_freq / 1000000000.);
+		fmt::append(result, " | TSC: %.02fGHz", tsc_freq / 1000000000.);
 	}
 	else
 	{
@@ -150,7 +128,7 @@ std::string utils::get_system_info()
 			result += '+';
 		}
 
-		if (has_avx512())
+		if (has_512())
 		{
 			result += '+';
 		}
@@ -158,24 +136,6 @@ std::string utils::get_system_info()
 		if (has_xop())
 		{
 			result += 'x';
-		}
-	}
-
-	if (has_fma3() || has_fma4())
-	{
-		result += " | FMA";
-
-		if (has_fma3() && has_fma4())
-		{
-			result += "3+4";
-		}
-		else if (has_fma3())
-		{
-			result += "3";
-		}
-		else if (has_fma4())
-		{
-			result += "4";
 		}
 	}
 
@@ -192,6 +152,7 @@ std::string utils::get_system_info()
 		{
 			result += " disabled by default";
 		}
+
 	}
 
 	return result;
@@ -222,7 +183,7 @@ std::string utils::get_firmware_version()
 
 std::string utils::get_OS_version()
 {
-	std::string output;
+	std::string output = "";
 #ifdef _WIN32
 	// GetVersionEx is deprecated, RtlGetVersion is kernel-mode only and AnalyticsInfo is UWP only.
 	// So we're forced to read PEB instead to get Windows version info. It's ugly but works.
@@ -263,102 +224,15 @@ std::string utils::get_OS_version()
 	return output;
 }
 
-static constexpr ullong round_tsc(ullong val)
-{
-	return ::rounded_div(val, 1'000'000) * 1'000'000;
-}
-
 ullong utils::get_tsc_freq()
 {
-	static const ullong cal_tsc = []() -> ullong
-	{
-		if (!has_invariant_tsc())
-			return 0;
-
 #ifdef _WIN32
-		LARGE_INTEGER freq;
-		if (!QueryPerformanceFrequency(&freq))
-			return 0;
-
-		if (freq.QuadPart <= 9'999'999)
-			return round_tsc(freq.QuadPart * 1024);
-
-		const ullong timer_freq = freq.QuadPart;
+	LARGE_INTEGER freq;
+	if (!QueryPerformanceFrequency(&freq) || freq.QuadPart > 9'999'999)
+		return 0;
+	return freq.QuadPart * 1024;
 #else
-		const ullong timer_freq = 1'000'000'000;
-#endif
-
-		// Calibrate TSC
-		constexpr int samples = 40;
-		ullong rdtsc_data[samples];
-		ullong timer_data[samples];
-		ullong error_data[samples];
-
-		// Narrow thread affinity to a single core
-		const u64 old_aff = thread_ctrl::get_thread_affinity_mask();
-		thread_ctrl::set_thread_affinity_mask(old_aff & (0 - old_aff));
-
-#ifndef _WIN32
-		struct timespec ts0;
-		clock_gettime(CLOCK_MONOTONIC, &ts0);
-		ullong sec_base = ts0.tv_sec;
-#endif
-
-		for (int i = 0; i < samples; i++)
-		{
-#ifdef _WIN32
-			Sleep(1);
-			error_data[i] = (_mm_lfence(), __rdtsc());
-			LARGE_INTEGER ctr;
-			QueryPerformanceCounter(&ctr);
-			rdtsc_data[i] = (_mm_lfence(), __rdtsc());
-			timer_data[i] = ctr.QuadPart;
-#else
-			usleep(200);
-			error_data[i] = (_mm_lfence(), __rdtsc());
-			struct timespec ts;
-			clock_gettime(CLOCK_MONOTONIC, &ts);
-			rdtsc_data[i] = (_mm_lfence(), __rdtsc());
-			timer_data[i] = ts.tv_nsec + (ts.tv_sec - sec_base) * 1'000'000'000;
-#endif
-		}
-
-		// Restore main thread affinity
-		thread_ctrl::set_thread_affinity_mask(old_aff);
-
-		// Compute average TSC
-		ullong acc = 0;
-		for (int i = 0; i < samples - 1; i++)
-		{
-			acc += (rdtsc_data[i + 1] - rdtsc_data[i]) * timer_freq / (timer_data[i + 1] - timer_data[i]);
-		}
-
-		// Rounding
-		return round_tsc(acc / (samples - 1));
-	}();
-
-	return cal_tsc;
-}
-
-u64 utils::get_total_memory()
-{
-#ifdef _WIN32
-	::MEMORYSTATUSEX memInfo;
-	memInfo.dwLength = sizeof(memInfo);
-	::GlobalMemoryStatusEx(&memInfo);
-	return memInfo.ullTotalPhys;
-#else
-	return ::sysconf(_SC_PHYS_PAGES) * ::sysconf(_SC_PAGE_SIZE);
-#endif
-}
-
-u32 utils::get_thread_count()
-{
-#ifdef _WIN32
-	::SYSTEM_INFO sysInfo;
-	::GetNativeSystemInfo(&sysInfo);
-	return sysInfo.dwNumberOfProcessors;
-#else
-	return ::sysconf(_SC_NPROCESSORS_ONLN);
+	// TODO
+	return 0;
 #endif
 }

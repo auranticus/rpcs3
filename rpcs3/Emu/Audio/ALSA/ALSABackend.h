@@ -1,8 +1,6 @@
 #pragma once
 
-#ifndef HAVE_ALSA
-#error "ALSA support disabled but still being built."
-#endif
+#ifdef HAVE_ALSA
 
 #include "Emu/Audio/AudioBackend.h"
 
@@ -28,3 +26,5 @@ public:
 	
 	virtual bool AddData(const void* src, u32 num_samples) override;
 };
+
+#endif

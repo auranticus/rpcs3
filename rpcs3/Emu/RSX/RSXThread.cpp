@@ -1,4 +1,7 @@
 ﻿#include "stdafx.h"
+#include "Emu/Memory/vm.h"
+#include "Emu/System.h"
+#include "Emu/IdManager.h"
 #include "RSXThread.h"
 
 #include "Emu/Cell/PPUCallback.h"
@@ -11,10 +14,8 @@
 #include "rsx_utils.h"
 #include "Emu/Cell/lv2/sys_event.h"
 #include "Emu/Cell/Modules/cellGcmSys.h"
-#include "Overlays/overlay_perf_metrics.h"
-#include "Utilities/date_time.h"
-#include "Utilities/span.h"
-#include "Utilities/asm.h"
+
+#include "Utilities/GSL.h"
 #include "Utilities/StrUtil.h"
 
 #include <cereal/archives/binary.hpp>
@@ -29,114 +30,77 @@ class GSRender;
 
 #define CMD_DEBUG 0
 
-std::atomic<bool> g_user_asked_for_frame_capture = false;
+bool user_asked_for_frame_capture = false;
+bool capture_current_frame = false;
 rsx::frame_trace_data frame_debug;
 rsx::frame_capture_data frame_capture;
+RSXIOTable RSXIOMem;
 
 extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
-extern u64 sys_time_get_timebase_frequency();
-extern u64 get_timebased_time();
 
 namespace rsx
 {
 	std::function<bool(u32 addr, bool is_writing)> g_access_violation_handler;
 
-	u32 get_address(u32 offset, u32 location, const char* from)
+	dma_manager g_dma_manager;
+
+	u32 get_address(u32 offset, u32 location)
 	{
-		const auto render = get_current_renderer();
-		std::string_view msg;
 
 		switch (location)
 		{
 		case CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER:
 		case CELL_GCM_LOCATION_LOCAL:
 		{
-			if (offset < render->local_mem_size)
-			{
-				return rsx::constants::local_mem_base + offset;
-			}
-
-			msg = "Local RSX offset out of range!"sv;
-			break;
+			return rsx::constants::local_mem_base + offset;
 		}
 
 		case CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER:
 		case CELL_GCM_LOCATION_MAIN:
 		{
-			if (const u32 ea = render->iomap_table.get_addr(offset); ea + 1)
+			if (u32 result = RSXIOMem.RealAddr(offset))
 			{
-				return ea;
+				return result;
 			}
 
-			msg = "RSXIO memory not mapped!"sv;
-			break;
+			fmt::throw_exception("GetAddress(offset=0x%x, location=0x%x): RSXIO memory not mapped" HERE, offset, location);
 		}
 
 		case CELL_GCM_CONTEXT_DMA_REPORT_LOCATION_LOCAL:
-		{
-			if (offset < sizeof(RsxReports::report) /*&& (offset % 0x10) == 0*/)
-			{
-				return render->label_addr + ::offset32(&RsxReports::report) + offset;
-			}
-
-			msg = "Local RSX REPORT offset out of range!"sv;
-			break;
-		}
+			return get_current_renderer()->label_addr + 0x1400 + offset;
 
 		case CELL_GCM_CONTEXT_DMA_REPORT_LOCATION_MAIN:
 		{
-			if (const u32 ea = offset < 0x1000000 ? render->iomap_table.get_addr(0x0e000000 + offset) : -1; ea + 1)
+			if (u32 result = RSXIOMem.RealAddr(0x0e000000 + offset))
 			{
-				return ea;
+				return result;
 			}
 
-			msg = "RSXIO REPORT memory not mapped!"sv;
-			break;
+			fmt::throw_exception("GetAddress(offset=0x%x, location=0x%x): RSXIO memory not mapped" HERE, offset, location);
 		}
 
-		// They are handled elsewhere for targeted methods, so it's unexpected for them to be passed here
 		case CELL_GCM_CONTEXT_DMA_TO_MEMORY_GET_NOTIFY0:
-			msg = "CELL_GCM_CONTEXT_DMA_TO_MEMORY_GET_NOTIFY0"sv; break;
+			fmt::throw_exception("Unimplemented CELL_GCM_CONTEXT_DMA_TO_MEMORY_GET_NOTIFY0 (offset=0x%x, location=0x%x)" HERE, offset, location);
 
 		case CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0:
-			msg = "CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0"sv; break;
+			fmt::throw_exception("Unimplemented CELL_GCM_CONTEXT_DMA_NOTIFY_MAIN_0 (offset=0x%x, location=0x%x)" HERE, offset, location);
 
 		case CELL_GCM_CONTEXT_DMA_SEMAPHORE_RW:
 		case CELL_GCM_CONTEXT_DMA_SEMAPHORE_R:
-		{
-			if (offset < sizeof(RsxReports::semaphore) /*&& (offset % 0x10) == 0*/)
-			{
-				return render->label_addr + offset;
-			}
-
-			msg = "DMA SEMAPHORE offset out of range!"sv;
-			break;
-		}
+			return get_current_renderer()->label_addr + offset;
 
 		case CELL_GCM_CONTEXT_DMA_DEVICE_RW:
-		case CELL_GCM_CONTEXT_DMA_DEVICE_R:
-		{
-			if (offset < 0x100000 /*&& (offset % 0x10) == 0*/)
-			{
-				return render->device_addr + offset;
-			}
+			return get_current_renderer()->ctxt_addr + offset;
 
-			// TODO: What happens here? It could wrap around or access other segments of rsx internal memory etc
-			// Or can simply throw access violation error
-			msg = "DMA DEVICE offset out of range!"sv;
-			break;
-		}
+		case CELL_GCM_CONTEXT_DMA_DEVICE_R:
+			return get_current_renderer()->ctxt_addr + offset;
 
 		default:
 		{
-			msg = "Invalid location!"sv;
-			break;
+			fmt::throw_exception("Invalid location (offset=0x%x, location=0x%x)" HERE, offset, location);
 		}
 		}
-
-		// Assume 'from' contains new line at start
-		fmt::throw_exception("rsx::get_address(offset=0x%x, location=0x%x): %s%s", offset, location, msg, from);
 	}
 
 	u32 get_vertex_type_size_on_host(vertex_base_type type, u32 size)
@@ -189,7 +153,7 @@ namespace rsx
 		default:
 			break;
 		}
-		fmt::throw_exception("RSXVertexData::GetTypeSize: Bad vertex data type (%d)!" HERE, static_cast<u8>(type));
+		fmt::throw_exception("RSXVertexData::GetTypeSize: Bad vertex data type (%d)!" HERE, (u8)type);
 	}
 
 	void tiled_region::write(const void *src, u32 width, u32 height, u32 pitch)
@@ -209,7 +173,7 @@ namespace rsx
 		case CELL_GCM_COMPMODE_DISABLED:
 			for (u32 y = 0; y < height; ++y)
 			{
-				memcpy(ptr + (offset_y + y) * tile->pitch + offset_x, static_cast<const u8*>(src) + pitch * y, pitch);
+				memcpy(ptr + (offset_y + y) * tile->pitch + offset_x, (u8*)src + pitch * y, pitch);
 			}
 			break;
 			/*
@@ -231,12 +195,12 @@ namespace rsx
 			{
 				for (u32 x = 0; x < width; ++x)
 				{
-					u32 value = *reinterpret_cast<const u32*>(static_cast<const u8*>(src) + pitch * y + x * sizeof(u32));
+					u32 value = *(u32*)((u8*)src + pitch * y + x * sizeof(u32));
 
-					*reinterpret_cast<u32*>(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32)) = value;
-					*reinterpret_cast<u32*>(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 1) * sizeof(u32)) = value;
-					*reinterpret_cast<u32*>(ptr + (offset_y + y * 2 + 1) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32)) = value;
-					*reinterpret_cast<u32*>(ptr + (offset_y + y * 2 + 1) * tile->pitch + offset_x + (x * 2 + 1) * sizeof(u32)) = value;
+					*(u32*)(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32)) = value;
+					*(u32*)(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 1) * sizeof(u32)) = value;
+					*(u32*)(ptr + (offset_y + y * 2 + 1) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32)) = value;
+					*(u32*)(ptr + (offset_y + y * 2 + 1) * tile->pitch + offset_x + (x * 2 + 1) * sizeof(u32)) = value;
 				}
 			}
 			break;
@@ -262,7 +226,7 @@ namespace rsx
 		case CELL_GCM_COMPMODE_DISABLED:
 			for (u32 y = 0; y < height; ++y)
 			{
-				memcpy(static_cast<u8*>(dst) + pitch * y, ptr + (offset_y + y) * tile->pitch + offset_x, pitch);
+				memcpy((u8*)dst + pitch * y, ptr + (offset_y + y) * tile->pitch + offset_x, pitch);
 			}
 			break;
 			/*
@@ -283,9 +247,9 @@ namespace rsx
 			{
 				for (u32 x = 0; x < width; ++x)
 				{
-					u32 value = *reinterpret_cast<u32*>(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32));
+					u32 value = *(u32*)(ptr + (offset_y + y * 2 + 0) * tile->pitch + offset_x + (x * 2 + 0) * sizeof(u32));
 
-					*reinterpret_cast<u32*>(static_cast<u8*>(dst) + pitch * y + x * sizeof(u32)) = value;
+					*(u32*)((u8*)dst + pitch * y + x * sizeof(u32)) = value;
 				}
 			}
 			break;
@@ -307,12 +271,10 @@ namespace rsx
 		};
 
 		m_rtts_dirty = true;
-		m_textures_dirty.fill(true);
-		m_vertex_textures_dirty.fill(true);
+		memset(m_textures_dirty, -1, sizeof(m_textures_dirty));
+		memset(m_vertex_textures_dirty, -1, sizeof(m_vertex_textures_dirty));
 
 		m_graphics_state = pipeline_state::all_dirty;
-
-		g_user_asked_for_frame_capture = false;
 
 		if (g_cfg.misc.use_native_interface && (g_cfg.video.renderer == video_renderer::opengl || g_cfg.video.renderer == video_renderer::vulkan))
 		{
@@ -331,34 +293,13 @@ namespace rsx
 
 	void thread::begin()
 	{
-		if (cond_render_ctrl.hw_cond_active)
+		if (conditional_render_enabled && conditional_render_test_address)
 		{
-			if (!cond_render_ctrl.eval_pending())
-			{
-				// End conditional rendering if still active
-				end_conditional_rendering();
-			}
-
-			// If hw cond render is enabled and evalutation is still pending, do nothing
-		}
-		else if (cond_render_ctrl.eval_pending())
-		{
-			// Evaluate conditional rendering test or enable hw cond render until results are available
-			if (backend_config.supports_hw_conditional_render)
-			{
-				// In this mode, it is possible to skip the cond render while the backend is still processing data.
-				// The backend guarantees that any draw calls emitted during this time will NOT generate any ROP writes
-				verify(HERE), !cond_render_ctrl.hw_cond_active;
-
-				// Pending evaluation, use hardware test
-				begin_conditional_rendering(cond_render_ctrl.eval_sources);
-			}
-			else
-			{
-				// NOTE: eval_sources list is reversed with newest query first
-				zcull_ctrl->read_barrier(this, cond_render_ctrl.eval_address, cond_render_ctrl.eval_sources.front());
-				verify(HERE), !cond_render_ctrl.eval_pending();
-			}
+			// Evaluate conditional rendering test
+			zcull_ctrl->read_barrier(this, conditional_render_test_address, 4);
+			vm::ptr<CellGcmReportData> result = vm::cast(conditional_render_test_address);
+			conditional_render_test_failed = (result->value == 0);
+			conditional_render_test_address = 0;
 		}
 
 		if (m_graphics_state & rsx::pipeline_state::fragment_program_dirty)
@@ -400,7 +341,7 @@ namespace rsx
 
 	u32 thread::get_push_buffer_index_count() const
 	{
-		return ::size32(element_push_buffer);
+		return (u32)element_push_buffer.size();
 	}
 
 	void thread::end()
@@ -426,7 +367,8 @@ namespace rsx
 
 		element_push_buffer.clear();
 
-		zcull_ctrl->on_draw();
+		if (zcull_ctrl->active)
+			zcull_ctrl->on_draw();
 
 		if (capture_current_frame)
 		{
@@ -447,6 +389,7 @@ namespace rsx
 
 	void thread::operator()()
 	{
+		try
 		{
 			// Wait for startup (TODO)
 			while (m_rsx_thread_exiting)
@@ -460,6 +403,11 @@ namespace rsx
 			}
 
 			on_task();
+		}
+		catch (const std::exception& e)
+		{
+			LOG_FATAL(RSX, "%s thrown: %s", typeid(e).name(), e.what());
+			Emu.Pause();
 		}
 
 		on_exit();
@@ -475,12 +423,28 @@ namespace rsx
 			return fmt::format("RSX [0x%07x]", +rsx->ctrl->get);
 		};
 
-		rsx::overlays::reset_performance_overlay();
+		if (m_overlay_manager)
+		{
+			if (g_cfg.video.perf_overlay.perf_overlay_enabled)
+			{
+				auto perf_overlay = m_overlay_manager->create<rsx::overlays::perf_metrics_overlay>();
 
-		g_fxo->get<rsx::dma_manager>()->init();
+				auto& perf_settings = g_cfg.video.perf_overlay;
+				perf_overlay->set_detail_level(perf_settings.level);
+				perf_overlay->set_position(perf_settings.position);
+				perf_overlay->set_update_interval(perf_settings.update_interval);
+				perf_overlay->set_font(perf_settings.font);
+				perf_overlay->set_font_size(perf_settings.font_size);
+				perf_overlay->set_margins(perf_settings.margin_x, perf_settings.margin_y);
+				perf_overlay->set_opacity(perf_settings.opacity / 100.f);
+				perf_overlay->init();
+			}
+		}
+
 		on_init_thread();
 
 		method_registers.init();
+		g_dma_manager.init();
 		m_profiler.enabled = !!g_cfg.video.overlay;
 
 		if (!zcull_ctrl)
@@ -495,7 +459,7 @@ namespace rsx
 
 		vblank_count = 0;
 
-		g_fxo->init<named_thread>("VBlank Thread", [this]()
+		thread_ctrl::spawn("VBlank Thread", [this]()
 		{
 			// See sys_timer_usleep for details
 #ifdef __linux__
@@ -505,21 +469,22 @@ namespace rsx
 #endif
 			u64 start_time = get_system_time();
 
+			const u64 period_time = 1000000 / g_cfg.video.vblank_rate;
+			const u64 wait_sleep = period_time - u64{period_time >= host_min_quantum} * host_min_quantum;
+
 			// TODO: exit condition
 			while (!Emu.IsStopped() && !m_rsx_thread_exiting)
 			{
-				const u64 period_time = 1000000 / g_cfg.video.vblank_rate;
-				const u64 wait_sleep = period_time - u64{period_time >= host_min_quantum} * host_min_quantum;
-
 				if (get_system_time() - start_time >= period_time)
 				{
 					do
 					{
 						start_time += period_time;
-						vblank_count++;
 
 						if (isHLE)
 						{
+							vblank_count++;
+
 							if (vblank_handler)
 							{
 								intr_thread->cmd_list
@@ -543,29 +508,16 @@ namespace rsx
 					continue;
 				}
 
-				if (Emu.IsPaused())
-				{
-					// Save the difference before pause
-					start_time = get_system_time() - start_time;
+				while (Emu.IsPaused() && !m_rsx_thread_exiting)
+					thread_ctrl::wait_for(wait_sleep);
 
-					while (Emu.IsPaused() && !m_rsx_thread_exiting)
-					{
-						thread_ctrl::wait_for(wait_sleep);
-					}
-
-					// Restore difference
-					start_time = get_system_time() - start_time;
-				}
-
-				thread_ctrl::wait_for(100);
+				thread_ctrl::wait_for(100); // Hack
 			}
 		});
 
-		g_fxo->init<named_thread>("RSX Decompiler Thread", [this]
+		thread_ctrl::spawn("RSX Decompiler Thread", [this]
 		{
-			const auto shadermode = g_cfg.video.shadermode.get();
-
-			if (shadermode != shader_mode::async_recompiler && shadermode != shader_mode::async_with_interpreter)
+			if (g_cfg.video.disable_asynchronous_shader_compiler)
 			{
 				// Die
 				return;
@@ -611,17 +563,18 @@ namespace rsx
 		while (true)
 		{
 			// Wait for external pause events
-			if (external_interrupt_lock)
+			if (external_interrupt_lock.load())
 			{
-				wait_pause();
+				external_interrupt_ack.store(true);
+				while (external_interrupt_lock.load()) _mm_pause();
 			}
 
 			// Note a possible rollback address
-			if (sync_point_request && !in_begin_end)
+			if (sync_point_request)
 			{
 				restore_point = ctrl->get;
 				saved_fifo_ret = fifo_ret_addr;
-				sync_point_request.release(false);
+				sync_point_request = false;
 			}
 
 			// Execute backend-local tasks first
@@ -659,7 +612,7 @@ namespace rsx
 		do_local_task(rsx::FIFO_state::lock_wait);
 
 		m_rsx_thread_exiting = true;
-		g_fxo->get<rsx::dma_manager>()->join();
+		g_dma_manager.join();
 	}
 
 	void thread::fill_scale_offset_data(void *buffer, bool flip_y) const
@@ -682,9 +635,9 @@ namespace rsx
 		float one = 1.f;
 
 		stream_vector(buffer, std::bit_cast<u32>(scale_x), 0, 0, std::bit_cast<u32>(offset_x));
-		stream_vector(static_cast<char*>(buffer) + 16, 0, std::bit_cast<u32>(scale_y), 0, std::bit_cast<u32>(offset_y));
-		stream_vector(static_cast<char*>(buffer) + 32, 0, 0, std::bit_cast<u32>(scale_z), std::bit_cast<u32>(offset_z));
-		stream_vector(static_cast<char*>(buffer) + 48, 0, 0, 0, std::bit_cast<u32>(one));
+		stream_vector((char*)buffer + 16, 0, std::bit_cast<u32>(scale_y), 0, std::bit_cast<u32>(offset_y));
+		stream_vector((char*)buffer + 32, 0, 0, std::bit_cast<u32>(scale_z), std::bit_cast<u32>(offset_z));
+		stream_vector((char*)buffer + 48, 0, 0, 0, std::bit_cast<u32>(one));
 	}
 
 	void thread::fill_user_clip_data(void *buffer) const
@@ -708,8 +661,7 @@ namespace rsx
 			switch (clip_plane_control[index])
 			{
 			default:
-				rsx_log.error("bad clip plane control (0x%x)", static_cast<u8>(clip_plane_control[index]));
-				[[fallthrough]];
+				LOG_ERROR(RSX, "bad clip plane control (0x%x)", (u8)clip_plane_control[index]);
 
 			case rsx::user_clip_plane_op::disable:
 				clip_enabled_flags[index] = 0;
@@ -742,28 +694,20 @@ namespace rsx
 
 	void thread::fill_fragment_state_buffer(void *buffer, const RSXFragmentProgram &fragment_program)
 	{
-		u32 rop_control = 0u;
+		//TODO: Properly support alpha-to-coverage and alpha-to-one behavior in shaders
+		auto fragment_alpha_func = rsx::method_registers.alpha_func();
+		auto alpha_ref = rsx::method_registers.alpha_ref() / 255.f;
+		auto rop_control = rsx::method_registers.alpha_test_enabled()? 1u : 0u;
 
-		if (rsx::method_registers.alpha_test_enabled())
+		if (rsx::method_registers.msaa_alpha_to_coverage_enabled() && !supports_hw_a2c)
 		{
-			const u32 alpha_func = static_cast<u32>(rsx::method_registers.alpha_func());
-			rop_control |= (alpha_func << 16);
-			rop_control |= ROP_control::alpha_test_enable;
-		}
-
-		if (rsx::method_registers.polygon_stipple_enabled())
-		{
-			rop_control |= ROP_control::polygon_stipple_enable;
-		}
-
-		if (rsx::method_registers.msaa_alpha_to_coverage_enabled() && !backend_config.supports_hw_a2c)
-		{
-			// TODO: Properly support alpha-to-coverage and alpha-to-one behavior in shaders
 			// Alpha values generate a coverage mask for order independent blending
 			// Requires hardware AA to work properly (or just fragment sample stage in fragment shaders)
 			// Simulated using combined alpha blend and alpha test
-			if (rsx::method_registers.msaa_sample_mask()) rop_control |= ROP_control::msaa_mask_enable;
-			rop_control |= ROP_control::csaa_enable;
+			const u32 mask_bit = rsx::method_registers.msaa_sample_mask() ? 1u : 0u;
+
+			rop_control |= (1u << 4);                 // CSAA enable bit
+			rop_control |= (mask_bit << 5);           // MSAA mask enable bit
 
 			// Sample configuration bits
 			switch (rsx::method_registers.surface_antialias())
@@ -781,7 +725,10 @@ namespace rsx
 
 		const f32 fog0 = rsx::method_registers.fog_params_0();
 		const f32 fog1 = rsx::method_registers.fog_params_1();
+		const u32 alpha_func = static_cast<u32>(fragment_alpha_func);
 		const u32 fog_mode = static_cast<u32>(rsx::method_registers.fog_equation());
+
+		rop_control |= (alpha_func << 16);
 
 		if (rsx::method_registers.framebuffer_srgb_enabled())
 		{
@@ -793,7 +740,7 @@ namespace rsx
 			case rsx::surface_color_format::x32:
 				break;
 			default:
-				rop_control |= ROP_control::framebuffer_srgb_enable;
+				rop_control |= (1u << 1);
 				break;
 			}
 		}
@@ -806,14 +753,13 @@ namespace rsx
 
 		const auto window_origin = rsx::method_registers.shader_window_origin();
 		const u32 window_height = rsx::method_registers.shader_window_height();
-		const f32 resolution_scale = (window_height <= static_cast<u32>(g_cfg.video.min_scalable_dimension)) ? 1.f : rsx::get_resolution_scale();
+		const f32 resolution_scale = (window_height <= (u32)g_cfg.video.min_scalable_dimension)? 1.f : rsx::get_resolution_scale();
 		const f32 wpos_scale = (window_origin == rsx::window_origin::top) ? (1.f / resolution_scale) : (-1.f / resolution_scale);
 		const f32 wpos_bias = (window_origin == rsx::window_origin::top) ? 0.f : window_height;
-		const f32 alpha_ref = rsx::method_registers.alpha_ref();
 
 		u32 *dst = static_cast<u32*>(buffer);
 		stream_vector(dst, std::bit_cast<u32>(fog0), std::bit_cast<u32>(fog1), rop_control, std::bit_cast<u32>(alpha_ref));
-		stream_vector(dst + 4, 0u, fog_mode, std::bit_cast<u32>(wpos_scale), std::bit_cast<u32>(wpos_bias));
+		stream_vector(dst + 4, alpha_func, fog_mode, std::bit_cast<u32>(wpos_scale), std::bit_cast<u32>(wpos_bias));
 	}
 
 	void thread::fill_fragment_texture_parameters(void *buffer, const RSXFragmentProgram &fragment_program)
@@ -821,17 +767,47 @@ namespace rsx
 		memcpy(buffer, fragment_program.texture_scale, 16 * 4 * sizeof(float));
 	}
 
+	void thread::write_inline_array_to_buffer(void *dst_buffer)
+	{
+		u8* src =
+			reinterpret_cast<u8*>(rsx::method_registers.current_draw_clause.inline_vertex_array.data());
+		u8* dst = (u8*)dst_buffer;
+
+		size_t bytes_written = 0;
+		while (bytes_written <
+			   rsx::method_registers.current_draw_clause.inline_vertex_array.size() * sizeof(u32))
+		{
+			for (int index = 0; index < rsx::limits::vertex_count; ++index)
+			{
+				const auto &info = rsx::method_registers.vertex_arrays_info[index];
+
+				if (!info.size()) // disabled
+					continue;
+
+				u32 element_size = rsx::get_vertex_type_size_on_host(info.type(), info.size());
+
+				if (info.type() == vertex_base_type::ub && info.size() == 4)
+				{
+					dst[0] = src[3];
+					dst[1] = src[2];
+					dst[2] = src[1];
+					dst[3] = src[0];
+				}
+				else
+					memcpy(dst, src, element_size);
+
+				src += element_size;
+				dst += element_size;
+
+				bytes_written += element_size;
+			}
+		}
+	}
+
 	u64 thread::timestamp()
 	{
-		const u64 freq = sys_time_get_timebase_frequency();
-
-		auto get_time_ns = [freq]()
-		{
-			const u64 t = get_timebased_time();
-			return (t / freq * 1'000'000'000 + t % freq * 1'000'000'000 / freq);
-		};
-
-		const u64 t = get_time_ns();
+		// Get timestamp, and convert it from microseconds to nanoseconds
+		const u64 t = get_guest_system_time() * 1000;
 		if (t != timestamp_ctrl)
 		{
 			timestamp_ctrl = t;
@@ -839,48 +815,90 @@ namespace rsx
 			return t;
 		}
 
-		// Check if we passed the limit of what fixed increments is legal for
-		// Wait for the next time value reported if we passed the limit
-		if ((1'000'000'000 / freq) - timestamp_subvalue <= 2)
-		{
-			u64 now = get_time_ns();
-
-			for (; t == now; now = get_time_ns())
-			{
-				_mm_pause();
-			}
-
-			timestamp_ctrl = now;
-			timestamp_subvalue = 0;
-			return now;
-		}
-
-		timestamp_subvalue += 2;
+		timestamp_subvalue += 10;
 		return t + timestamp_subvalue;
 	}
 
-	gsl::span<const std::byte> thread::get_raw_index_array(const draw_clause& draw_indexed_clause) const
+	gsl::span<const gsl::byte> thread::get_raw_index_array(const draw_clause& draw_indexed_clause) const
 	{
 		if (!element_push_buffer.empty())
 		{
 			//Indices provided via immediate mode
-			return{reinterpret_cast<const std::byte*>(element_push_buffer.data()), ::narrow<u32>(element_push_buffer.size() * sizeof(u32))};
+			return{(const gsl::byte*)element_push_buffer.data(), ::narrow<u32>(element_push_buffer.size() * sizeof(u32))};
 		}
 
-		const rsx::index_array_type type = rsx::method_registers.index_type();
-		const u32 type_size = get_index_type_size(type);
+		u32 address = rsx::get_address(rsx::method_registers.index_array_address(), rsx::method_registers.index_array_location());
+		rsx::index_array_type type = rsx::method_registers.index_type();
 
-		// Force aligned indices as realhw
-		const u32 address = (0 - type_size) & get_address(rsx::method_registers.index_array_address(), rsx::method_registers.index_array_location(), HERE);
-
-		const bool is_primitive_restart_enabled = rsx::method_registers.restart_index_enabled();
-		const u32 primitive_restart_index = rsx::method_registers.restart_index();
+		u32 type_size = ::narrow<u32>(get_index_type_size(type));
+		bool is_primitive_restart_enabled = rsx::method_registers.restart_index_enabled();
+		u32 primitive_restart_index = rsx::method_registers.restart_index();
 
 		const u32 first = draw_indexed_clause.min_index();
 		const u32 count = draw_indexed_clause.get_elements_count();
 
-		const auto ptr = vm::_ptr<const std::byte>(address);
+		const gsl::byte* ptr = static_cast<const gsl::byte*>(vm::base(address));
 		return{ ptr + first * type_size, count * type_size };
+	}
+
+	gsl::span<const gsl::byte> thread::get_raw_vertex_buffer(const rsx::data_array_format_info& vertex_array_info, u32 base_offset, const draw_clause& draw_array_clause) const
+	{
+		u32 offset  = vertex_array_info.offset();
+		u32 address = rsx::get_address(rsx::get_vertex_offset_from_base(base_offset, offset & 0x7fffffff), offset >> 31);
+
+		u32 element_size = rsx::get_vertex_type_size_on_host(vertex_array_info.type(), vertex_array_info.size());
+
+		const u32 first = draw_array_clause.min_index();
+		const u32 count = draw_array_clause.get_elements_count();
+
+		const gsl::byte* ptr = gsl::narrow_cast<const gsl::byte*>(vm::base(address));
+		return {ptr + first * vertex_array_info.stride(), count * vertex_array_info.stride() + element_size};
+	}
+
+	std::vector<std::variant<vertex_array_buffer, vertex_array_register, empty_vertex_array>>
+	thread::get_vertex_buffers(const rsx::rsx_state& state, const u64 consumed_attrib_mask) const
+	{
+		std::vector<std::variant<vertex_array_buffer, vertex_array_register, empty_vertex_array>> result;
+		result.reserve(rsx::limits::vertex_count);
+
+		u32 input_mask = state.vertex_attrib_input_mask();
+		for (u8 index = 0; index < rsx::limits::vertex_count; ++index)
+		{
+			const bool enabled = !!(input_mask & (1 << index));
+			const bool consumed = !!(consumed_attrib_mask & (1ull << index));
+
+			if (!enabled && !consumed)
+				continue;
+
+			if (state.vertex_arrays_info[index].size() > 0)
+			{
+				const rsx::data_array_format_info& info = state.vertex_arrays_info[index];
+				result.emplace_back(vertex_array_buffer{info.type(), info.size(), info.stride(),
+					get_raw_vertex_buffer(info, state.vertex_data_base_offset(), state.current_draw_clause), index, true});
+				continue;
+			}
+
+			if (vertex_push_buffers[index].vertex_count > 1)
+			{
+				const auto& info = vertex_push_buffers[index];
+				const u8 element_size = info.size * sizeof(u32);
+
+				gsl::span<const gsl::byte> vertex_src = { (const gsl::byte*)vertex_push_buffers[index].data.data(), vertex_push_buffers[index].vertex_count * element_size };
+				result.emplace_back(vertex_array_buffer{ info.type, info.size, element_size, vertex_src, index, false });
+				continue;
+			}
+
+			if (state.register_vertex_info[index].size > 0)
+			{
+				const rsx::register_vertex_data_info& info = state.register_vertex_info[index];
+				result.emplace_back(vertex_array_register{info.type, info.size, info.data, index});
+				continue;
+			}
+
+			result.emplace_back(empty_vertex_array{index});
+		}
+
+		return result;
 	}
 
 	std::variant<draw_array_command, draw_indexed_array_command, draw_inlined_array>
@@ -930,6 +948,33 @@ namespace rsx
 		}
 	}
 
+
+	//std::future<void> thread::add_internal_task(std::function<bool()> callback)
+	//{
+	//	std::lock_guard lock(m_mtx_task);
+	//	m_internal_tasks.emplace_back(callback);
+
+	//	return m_internal_tasks.back().promise.get_future();
+	//}
+
+	//void thread::invoke(std::function<bool()> callback)
+	//{
+	//	if (get() == thread_ctrl::get_current())
+	//	{
+	//		while (true)
+	//		{
+	//			if (callback())
+	//			{
+	//				break;
+	//			}
+	//		}
+	//	}
+	//	else
+	//	{
+	//		add_internal_task(callback).wait();
+	//	}
+	//}
+
 	namespace
 	{
 		bool is_int_type(rsx::vertex_base_type type)
@@ -963,10 +1008,10 @@ namespace rsx
 		};
 		return
 		{
-			rsx::get_address(offset_color[0], context_dma_color[0], HERE),
-			rsx::get_address(offset_color[1], context_dma_color[1], HERE),
-			rsx::get_address(offset_color[2], context_dma_color[2], HERE),
-			rsx::get_address(offset_color[3], context_dma_color[3], HERE),
+			rsx::get_address(offset_color[0], context_dma_color[0]),
+			rsx::get_address(offset_color[1], context_dma_color[1]),
+			rsx::get_address(offset_color[2], context_dma_color[2]),
+			rsx::get_address(offset_color[3], context_dma_color[3]),
 		};
 	}
 
@@ -974,12 +1019,12 @@ namespace rsx
 	{
 		u32 m_context_dma_z = rsx::method_registers.surface_z_dma();
 		u32 offset_zeta = rsx::method_registers.surface_z_offset();
-		return rsx::get_address(offset_zeta, m_context_dma_z, HERE);
+		return rsx::get_address(offset_zeta, m_context_dma_z);
 	}
 
 	void thread::get_framebuffer_layout(rsx::framebuffer_creation_context context, framebuffer_layout &layout)
 	{
-		layout = {};
+		memset(&layout, 0, sizeof(layout));
 
 		layout.ignore_change = true;
 		layout.width = rsx::method_registers.surface_clip_width();
@@ -991,7 +1036,7 @@ namespace rsx
 
 		if (layout.width == 0 || layout.height == 0)
 		{
-			rsx_log.trace("Invalid framebuffer setup, w=%d, h=%d", layout.width, layout.height);
+			LOG_TRACE(RSX, "Invalid framebuffer setup, w=%d, h=%d", layout.width, layout.height);
 			return;
 		}
 
@@ -1026,7 +1071,7 @@ namespace rsx
 		const bool depth_test_enabled = rsx::method_registers.depth_test_enabled();
 
 		// Check write masks
-		layout.zeta_write_enabled = (depth_test_enabled && rsx::method_registers.depth_write_enabled());
+		layout.zeta_write_enabled = rsx::method_registers.depth_write_enabled();
 		if (!layout.zeta_write_enabled && stencil_test_enabled)
 		{
 			// Check if stencil data is modified
@@ -1038,9 +1083,9 @@ namespace rsx
 			if ((!mask || !active_write_op) && rsx::method_registers.two_sided_stencil_test_enabled())
 			{
 				mask |= rsx::method_registers.back_stencil_mask();
-				active_write_op |= (rsx::method_registers.back_stencil_op_zpass() != rsx::stencil_op::keep ||
-					rsx::method_registers.back_stencil_op_fail() != rsx::stencil_op::keep ||
-					rsx::method_registers.back_stencil_op_zfail() != rsx::stencil_op::keep);
+				active_write_op |= (rsx::method_registers.stencil_op_zpass() != rsx::stencil_op::keep ||
+					rsx::method_registers.stencil_op_fail() != rsx::stencil_op::keep ||
+					rsx::method_registers.stencil_op_zfail() != rsx::stencil_op::keep);
 			}
 
 			layout.zeta_write_enabled = (mask && active_write_op);
@@ -1048,7 +1093,7 @@ namespace rsx
 
 		// NOTE: surface_target_a is index 1 but is not MRT since only one surface is active
 		bool color_write_enabled = false;
-		for (uint i = 0; i < mrt_buffers.size(); ++i)
+		for (int i = 0; i < mrt_buffers.size(); ++i)
 		{
 			if (rsx::method_registers.color_write_enabled(i))
 			{
@@ -1072,46 +1117,12 @@ namespace rsx
 			break;
 		case rsx::framebuffer_creation_context::context_draw:
 			// NOTE: As with all other hw, depth/stencil writes involve the corresponding depth/stencil test, i.e No test = No write
-			// NOTE: Depth test is not really using the memory if its set to always or never
-			// TODO: Perform similar checks for stencil test
-			if (!stencil_test_enabled)
-			{
-				if (!depth_test_enabled)
-				{
-					depth_buffer_unused = true;
-				}
-				else if (!rsx::method_registers.depth_write_enabled())
-				{
-					// Depth test is enabled but depth write is disabled
-					switch (rsx::method_registers.depth_func())
-					{
-					default:
-						break;
-					case rsx::comparison_function::never:
-					case rsx::comparison_function::always:
-						// No access to depth buffer memory
-						depth_buffer_unused = true;
-						break;
-					}
-				}
-
-				if (depth_buffer_unused) [[unlikely]]
-				{
-					// Check if depth bounds is active. Depth bounds test does NOT need depth test to be enabled to access the Z buffer
-					// Bind Z buffer in read mode for bounds check in this case
-					if (rsx::method_registers.depth_bounds_test_enabled() &&
-						(rsx::method_registers.depth_bounds_min() > 0.f || rsx::method_registers.depth_bounds_max() < 1.f))
-					{
-						depth_buffer_unused = false;
-					}
-				}
-			}
-
 			color_buffer_unused = !color_write_enabled || layout.target == rsx::surface_target::none;
+			depth_buffer_unused = !depth_test_enabled && !stencil_test_enabled;
 			m_framebuffer_state_contested = color_buffer_unused || depth_buffer_unused;
 			break;
 		default:
-			fmt::throw_exception("Unknown framebuffer context 0x%x" HERE, static_cast<u32>(context));
+			fmt::throw_exception("Unknown framebuffer context 0x%x" HERE, (u32)context);
 		}
 
 		// Swizzled render does tight packing of bytes
@@ -1122,7 +1133,7 @@ namespace rsx
 		switch (const auto mode = rsx::method_registers.surface_type())
 		{
 		default:
-			rsx_log.error("Unknown raster mode 0x%x", static_cast<u32>(mode));
+			LOG_ERROR(RSX, "Unknown raster mode 0x%x", (u32)mode);
 			[[fallthrough]];
 		case rsx::surface_raster_type::linear:
 			break;
@@ -1175,9 +1186,9 @@ namespace rsx
 			if (layout.color_pitch[index] < minimum_color_pitch)
 			{
 				// Unlike the depth buffer, when given a color target we know it is intended to be rendered to
-				rsx_log.error("Framebuffer setup error: Color target failed pitch check, Pitch=[%d, %d, %d, %d] + %d, target=%d, context=%d",
+				LOG_ERROR(RSX, "Framebuffer setup error: Color target failed pitch check, Pitch=[%d, %d, %d, %d] + %d, target=%d, context=%d",
 					layout.color_pitch[0], layout.color_pitch[1], layout.color_pitch[2], layout.color_pitch[3],
-					layout.zeta_pitch, static_cast<u32>(layout.target), static_cast<u32>(context));
+					layout.zeta_pitch, (u32)layout.target, (u32)context);
 
 				// Do not remove this buffer for now as it implies something went horribly wrong anyway
 				break;
@@ -1185,8 +1196,8 @@ namespace rsx
 
 			if (layout.color_addresses[index] == layout.zeta_address)
 			{
-				rsx_log.warning("Framebuffer at 0x%X has aliasing color/depth targets, color_index=%d, zeta_pitch = %d, color_pitch=%d, context=%d",
-					layout.zeta_address, index, layout.zeta_pitch, layout.color_pitch[index], static_cast<u32>(context));
+				LOG_WARNING(RSX, "Framebuffer at 0x%X has aliasing color/depth targets, color_index=%d, zeta_pitch = %d, color_pitch=%d, context=%d",
+					layout.zeta_address, index, layout.zeta_pitch, layout.color_pitch[index], (u32)context);
 
 				m_framebuffer_state_contested = true;
 
@@ -1227,7 +1238,7 @@ namespace rsx
 
 		if (!framebuffer_status_valid && !layout.zeta_address)
 		{
-			rsx_log.warning("Framebuffer setup failed. Draw calls may have been lost");
+			LOG_WARNING(RSX, "Framebuffer setup failed. Draw calls may have been lost");
 			return;
 		}
 
@@ -1246,7 +1257,7 @@ namespace rsx
 			// Tested with Turbo: Super stunt squad that only changes the window offset to declare new framebuffers
 			// Sampling behavior clearly indicates the addresses are expected to have changed
 			if (auto clip_type = rsx::method_registers.window_clip_type())
-				rsx_log.error("Unknown window clip type 0x%X" HERE, clip_type);
+				LOG_ERROR(RSX, "Unknown window clip type 0x%X" HERE, clip_type);
 
 			for (const auto &index : rsx::utility::get_rtt_indexes(layout.target))
 			{
@@ -1266,7 +1277,7 @@ namespace rsx
 		if ((window_clip_width && window_clip_width < layout.width) ||
 			(window_clip_height && window_clip_height < layout.height))
 		{
-			rsx_log.error("Unexpected window clip dimensions: window_clip=%dx%d, surface_clip=%dx%d",
+			LOG_ERROR(RSX, "Unexpected window clip dimensions: window_clip=%dx%d, surface_clip=%dx%d",
 				window_clip_width, window_clip_height, layout.width, layout.height);
 		}
 
@@ -1310,155 +1321,6 @@ namespace rsx
 		}
 
 		layout.ignore_change = false;
-	}
-
-	void thread::on_framebuffer_options_changed(u32 opt)
-	{
-		auto evaluate_depth_buffer_state = [&]()
-		{
-			m_framebuffer_layout.zeta_write_enabled =
-				(rsx::method_registers.depth_test_enabled() && rsx::method_registers.depth_write_enabled());
-		};
-
-		auto evaluate_stencil_buffer_state = [&]()
-		{
-			if (!m_framebuffer_layout.zeta_write_enabled &&
-				rsx::method_registers.stencil_test_enabled() &&
-				m_framebuffer_layout.depth_format == rsx::surface_depth_format::z24s8)
-			{
-				// Check if stencil data is modified
-				auto mask = rsx::method_registers.stencil_mask();
-				bool active_write_op = (rsx::method_registers.stencil_op_zpass() != rsx::stencil_op::keep ||
-					rsx::method_registers.stencil_op_fail() != rsx::stencil_op::keep ||
-					rsx::method_registers.stencil_op_zfail() != rsx::stencil_op::keep);
-
-				if ((!mask || !active_write_op) && rsx::method_registers.two_sided_stencil_test_enabled())
-				{
-					mask |= rsx::method_registers.back_stencil_mask();
-					active_write_op |= (rsx::method_registers.back_stencil_op_zpass() != rsx::stencil_op::keep ||
-						rsx::method_registers.back_stencil_op_fail() != rsx::stencil_op::keep ||
-						rsx::method_registers.back_stencil_op_zfail() != rsx::stencil_op::keep);
-				}
-
-				m_framebuffer_layout.zeta_write_enabled = (mask && active_write_op);
-			}
-		};
-
-		auto evaluate_color_buffer_state = [&]() -> bool
-		{
-			const auto mrt_buffers = rsx::utility::get_rtt_indexes(m_framebuffer_layout.target);
-			bool any_found = false;
-
-			for (uint i = 0; i < mrt_buffers.size(); ++i)
-			{
-				if (rsx::method_registers.color_write_enabled(i))
-				{
-					const auto real_index = mrt_buffers[i];
-					m_framebuffer_layout.color_write_enabled[real_index] = true;
-					any_found = true;
-				}
-			}
-
-			return any_found;
-		};
-
-		auto evaluate_depth_buffer_contested = [&]()
-		{
-			if (m_framebuffer_layout.zeta_address) [[likely]]
-			{
-				// Nothing to do, depth buffer already exists
-				return false;
-			}
-
-			// Check if depth read/write is enabled
-			if (m_framebuffer_layout.zeta_write_enabled ||
-				rsx::method_registers.depth_test_enabled())
-			{
-				return true;
-			}
-
-			// Check if stencil read is enabled
-			if (m_framebuffer_layout.depth_format == rsx::surface_depth_format::z24s8 &&
-				rsx::method_registers.stencil_test_enabled())
-			{
-				return true;
-			}
-
-			return false;
-		};
-
-		if (m_rtts_dirty)
-		{
-			// Nothing to do
-			return;
-		}
-
-		switch (opt)
-		{
-		case NV4097_SET_DEPTH_TEST_ENABLE:
-		case NV4097_SET_DEPTH_MASK:
-		{
-			evaluate_depth_buffer_state();
-
-			if (m_framebuffer_state_contested)
-			{
-				m_rtts_dirty |= evaluate_depth_buffer_contested();
-			}
-			break;
-		}
-		case NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE:
-		case NV4097_SET_STENCIL_TEST_ENABLE:
-		case NV4097_SET_STENCIL_MASK:
-		case NV4097_SET_STENCIL_OP_ZPASS:
-		case NV4097_SET_STENCIL_OP_FAIL:
-		case NV4097_SET_STENCIL_OP_ZFAIL:
-		case NV4097_SET_BACK_STENCIL_MASK:
-		case NV4097_SET_BACK_STENCIL_OP_ZPASS:
-		case NV4097_SET_BACK_STENCIL_OP_FAIL:
-		case NV4097_SET_BACK_STENCIL_OP_ZFAIL:
-		{
-			// Stencil takes a back seat to depth buffer stuff
-			evaluate_depth_buffer_state();
-
-			if (!m_framebuffer_layout.zeta_write_enabled)
-			{
-				evaluate_stencil_buffer_state();
-			}
-
-			if (m_framebuffer_state_contested)
-			{
-				m_rtts_dirty |= evaluate_depth_buffer_contested();
-			}
-			break;
-		}
-		case NV4097_SET_COLOR_MASK:
-		case NV4097_SET_COLOR_MASK_MRT:
-		{
-			if (!m_framebuffer_state_contested) [[likely]]
-			{
-				// Update write masks and continue
-				evaluate_color_buffer_state();
-			}
-			else
-			{
-				bool old_state = false;
-				for (const auto& enabled : m_framebuffer_layout.color_write_enabled)
-				{
-					if (old_state = enabled; old_state) break;
-				}
-
-				const auto new_state = evaluate_color_buffer_state();
-				if (!old_state && new_state)
-				{
-					// Color buffers now in use
-					m_rtts_dirty = true;
-				}
-			}
-			break;
-		}
-		default:
-			rsx_log.fatal("Unhandled framebuffer option changed 0x%x", opt);
-		}
 	}
 
 	bool thread::get_scissor(areau& region, bool clip_viewport)
@@ -1557,7 +1419,7 @@ namespace rsx
 				const auto &tex = rsx::method_registers.vertex_textures[i];
 				if (tex.enabled() && (current_vp_metadata.referenced_textures_mask & (1 << i)))
 				{
-					current_vertex_program.texture_dimensions |= (static_cast<u32>(sampler_descriptors[i]->image_type) << (i << 1));
+					current_vertex_program.texture_dimensions |= ((u32)sampler_descriptors[i]->image_type << (i << 1));
 				}
 			}
 		}
@@ -1769,7 +1631,7 @@ namespace rsx
 		for (auto &info : result.interleaved_blocks)
 		{
 			//Calculate real data address to be used during upload
-			info.real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(state.vertex_data_base_offset(), info.base_offset), info.memory_location, HERE);
+			info.real_offset_address = rsx::get_address(rsx::get_vertex_offset_from_base(state.vertex_data_base_offset(), info.base_offset), info.memory_location);
 		}
 	}
 
@@ -1781,15 +1643,17 @@ namespace rsx
 		m_graphics_state &= ~(rsx::pipeline_state::fragment_program_dirty);
 		auto &result = current_fragment_program = {};
 
-		const auto [program_offset, program_location] = method_registers.shader_program_address();
+		const u32 shader_program = rsx::method_registers.shader_program_address();
 
-		result.addr = vm::base(rsx::get_address(program_offset, program_location, HERE));
+		const u32 program_location = (shader_program & 0x3) - 1;
+		const u32 program_offset = (shader_program & ~0x3);
+
+		result.addr = vm::base(rsx::get_address(program_offset, program_location));
 		current_fp_metadata = program_hash_util::fragment_program_utils::analyse_fragment_program(result.addr);
 
-		result.addr = (static_cast<u8*>(result.addr) + current_fp_metadata.program_start_offset);
+		result.addr = ((u8*)result.addr + current_fp_metadata.program_start_offset);
 		result.offset = program_offset + current_fp_metadata.program_start_offset;
 		result.ucode_length = current_fp_metadata.program_ucode_length;
-		result.total_length = result.ucode_length + current_fp_metadata.program_start_offset;
 		result.valid = true;
 		result.ctrl = rsx::method_registers.shader_control() & (CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS | CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT);
 		result.texcoord_control_mask = rsx::method_registers.texcoord_control_mask();
@@ -1798,13 +1662,6 @@ namespace rsx
 		result.redirected_textures = 0;
 		result.shadow_textures = 0;
 
-		if (method_registers.current_draw_clause.primitive == primitive_type::points &&
-			method_registers.point_sprite_enabled())
-		{
-			// Set high word of the control mask to store point sprite control
-			result.texcoord_control_mask |= u32(method_registers.point_sprite_control_mask()) << 16;
-		}
-
 		const auto resolution_scale = rsx::get_resolution_scale();
 
 		for (u32 i = 0; i < rsx::limits::fragment_textures_count; ++i)
@@ -1812,12 +1669,12 @@ namespace rsx
 			auto &tex = rsx::method_registers.fragment_textures[i];
 			result.texture_scale[i][0] = sampler_descriptors[i]->scale_x;
 			result.texture_scale[i][1] = sampler_descriptors[i]->scale_y;
-			result.texture_scale[i][2] = std::bit_cast<f32>(tex.remap());
+			result.texture_scale[i][2] = (f32)tex.remap();  //Debug value
 
 			if (tex.enabled() && (current_fp_metadata.referenced_textures_mask & (1 << i)))
 			{
 				u32 texture_control = 0;
-				result.texture_dimensions |= (static_cast<u32>(sampler_descriptors[i]->image_type) << (i << 1));
+				result.texture_dimensions |= ((u32)sampler_descriptors[i]->image_type << (i << 1));
 
 				if (tex.alpha_kill_enabled())
 				{
@@ -1825,7 +1682,7 @@ namespace rsx
 					texture_control |= (1 << 4);
 				}
 
-				const u32 texaddr = rsx::get_address(tex.offset(), tex.location(), HERE);
+				const u32 texaddr = rsx::get_address(tex.offset(), tex.location());
 				const u32 raw_format = tex.format();
 				const u32 format = raw_format & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
 
@@ -1868,51 +1725,11 @@ namespace rsx
 						break;
 					}
 					default:
-						rsx_log.error("Depth texture bound to pipeline with unexpected format 0x%X", format);
-					}
-				}
-				else if (!backend_config.supports_hw_renormalization)
-				{
-					switch (format)
-					{
-					case CELL_GCM_TEXTURE_A1R5G5B5:
-					case CELL_GCM_TEXTURE_A4R4G4B4:
-					case CELL_GCM_TEXTURE_D1R5G5B5:
-					case CELL_GCM_TEXTURE_R5G5B5A1:
-					case CELL_GCM_TEXTURE_R5G6B5:
-					case CELL_GCM_TEXTURE_R6G5B5:
-						texture_control |= (1 << 5);
-						break;
-					default:
-						break;
+						LOG_ERROR(RSX, "Depth texture bound to pipeline with unexpected format 0x%X", format);
 					}
 				}
 
-				// Special operations applied to 8-bit formats such as gamma correction and sign conversion
-				// NOTE: The unsigned_remap being set to anything other than 0 flags the texture as being signed
-				// This is a separate method of setting the format to signed mode without doing so per-channel
-				// NOTE2: Modifier precedence is not respected here. This is another TODO (kd-11)
-				u32 argb8_convert = tex.gamma();
-				if (const u32 sign_convert = tex.unsigned_remap() ? 0xF : tex.argb_signed())
-				{
-					// Apply remap to avoid mapping 1 to -1. Only the sign conversion needs this check
-					// TODO: Use actual remap mask to account for 0 and 1 overrides in default mapping
-					// TODO: Replace this clusterfuck of texture control with matrix transformation
-					const auto remap_ctrl = (tex.remap() >> 8) & 0xAA;
-					if (remap_ctrl == 0xAA)
-					{
-						argb8_convert |= (sign_convert & 0xFu) << 6;
-					}
-					else
-					{
-						if (remap_ctrl & 0x03) argb8_convert |= (sign_convert & 0x1u) << 6;
-						if (remap_ctrl & 0x0C) argb8_convert |= (sign_convert & 0x2u) << 6;
-						if (remap_ctrl & 0x30) argb8_convert |= (sign_convert & 0x4u) << 6;
-						if (remap_ctrl & 0xC0) argb8_convert |= (sign_convert & 0x8u) << 6;
-					}
-				}
-
-				if (argb8_convert)
+				if (const auto srgb_mask = tex.gamma())
 				{
 					switch (format)
 					{
@@ -1928,11 +1745,11 @@ namespace rsx
 					case CELL_GCM_TEXTURE_W32_Z32_Y32_X32_FLOAT:
 					case CELL_GCM_TEXTURE_X32_FLOAT:
 					case CELL_GCM_TEXTURE_Y16_X16_FLOAT:
-						// Special data formats (XY, HILO, DEPTH) are not RGB formats
-						// Ignore gamma flags
+						//Special data formats (XY, HILO, DEPTH) are not RGB formats
+						//Ignore gamma flags
 						break;
 					default:
-						texture_control |= argb8_convert;
+						texture_control |= srgb_mask;
 						break;
 					}
 				}
@@ -1950,25 +1767,119 @@ namespace rsx
 			//Check that the depth stage is not disabled
 			if (!rsx::method_registers.depth_test_enabled())
 			{
-				rsx_log.error("FS exports depth component but depth test is disabled (INVALID_OPERATION)");
+				LOG_ERROR(RSX, "FS exports depth component but depth test is disabled (INVALID_OPERATION)");
 			}
 		}
 	}
 
-	bool thread::invalidate_fragment_program(u32 dst_dma, u32 dst_offset, u32 size)
+	void thread::get_current_fragment_program_legacy(const std::function<std::tuple<bool, u16>(u32, fragment_texture&, bool)>& get_surface_info)
 	{
-		const auto [shader_offset, shader_dma] = rsx::method_registers.shader_program_address();
+		auto &result = current_fragment_program = {};
 
-		if ((dst_dma & CELL_GCM_LOCATION_MAIN) == shader_dma &&
-		address_range::start_length(shader_offset, current_fragment_program.total_length).overlaps(
-			address_range::start_length(dst_offset, size))) [[unlikely]]
+		const u32 shader_program = rsx::method_registers.shader_program_address();
+		const u32 program_location = (shader_program & 0x3) - 1;
+		const u32 program_offset = (shader_program & ~0x3);
+
+		result.addr = vm::base(rsx::get_address(program_offset, program_location));
+		auto program_info = program_hash_util::fragment_program_utils::analyse_fragment_program(result.addr);
+
+		result.addr = ((u8*)result.addr + program_info.program_start_offset);
+		result.offset = program_offset + program_info.program_start_offset;
+		result.ucode_length = program_info.program_ucode_length;
+		result.valid = true;
+		result.ctrl = rsx::method_registers.shader_control() & (CELL_GCM_SHADER_CONTROL_32_BITS_EXPORTS | CELL_GCM_SHADER_CONTROL_DEPTH_EXPORT);
+		result.unnormalized_coords = 0;
+		result.two_sided_lighting = rsx::method_registers.two_side_light_en();
+		result.redirected_textures = 0;
+		result.shadow_textures = 0;
+
+		const auto resolution_scale = rsx::get_resolution_scale();
+
+		for (u32 i = 0; i < rsx::limits::fragment_textures_count; ++i)
 		{
-			// Data overlaps
-			m_graphics_state |= rsx::pipeline_state::fragment_program_dirty;
-			return true;
-		}
+			auto &tex = rsx::method_registers.fragment_textures[i];
+			result.texture_scale[i][0] = 1.f;
+			result.texture_scale[i][1] = 1.f;
+			result.textures_alpha_kill[i] = 0;
+			result.textures_zfunc[i] = 0;
 
-		return false;
+			if (tex.enabled() && (program_info.referenced_textures_mask & (1 << i)))
+			{
+				result.texture_dimensions |= ((u32)tex.get_extended_texture_dimension() << (i << 1));
+
+				if (tex.alpha_kill_enabled())
+				{
+					//alphakill can be ignored unless a valid comparison function is set
+					const auto func = tex.zfunc();
+					if (func < rsx::comparison_function::always && func > rsx::comparison_function::never)
+					{
+						result.textures_alpha_kill[i] = 1;
+						result.textures_zfunc[i] = (u8)func;
+					}
+				}
+
+				const u32 texaddr = rsx::get_address(tex.offset(), tex.location());
+				const u32 raw_format = tex.format();
+
+				if (raw_format & CELL_GCM_TEXTURE_UN)
+					result.unnormalized_coords |= (1 << i);
+
+				bool surface_exists;
+				u16  surface_pitch;
+
+				std::tie(surface_exists, surface_pitch) = get_surface_info(texaddr, tex, false);
+
+				if (surface_exists && surface_pitch)
+				{
+					if (raw_format & CELL_GCM_TEXTURE_UN)
+					{
+						result.texture_scale[i][0] = (resolution_scale * (float)surface_pitch) / tex.pitch();
+						result.texture_scale[i][1] = resolution_scale;
+					}
+				}
+				else
+				{
+					std::tie(surface_exists, surface_pitch) = get_surface_info(texaddr, tex, true);
+					if (surface_exists)
+					{
+						if (raw_format & CELL_GCM_TEXTURE_UN)
+						{
+							result.texture_scale[i][0] = (resolution_scale * (float)surface_pitch) / tex.pitch();
+							result.texture_scale[i][1] = resolution_scale;
+						}
+
+						const u32 format = raw_format & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN);
+						switch (format)
+						{
+						case CELL_GCM_TEXTURE_A8R8G8B8:
+						case CELL_GCM_TEXTURE_D8R8G8B8:
+						case CELL_GCM_TEXTURE_A4R4G4B4:
+						case CELL_GCM_TEXTURE_R5G6B5:
+						{
+							u32 remap = tex.remap();
+							result.redirected_textures |= (1 << i);
+							result.texture_scale[i][2] = std::bit_cast<f32>(remap);
+							break;
+						}
+						case CELL_GCM_TEXTURE_DEPTH16:
+						case CELL_GCM_TEXTURE_DEPTH16_FLOAT:
+						case CELL_GCM_TEXTURE_DEPTH24_D8:
+						case CELL_GCM_TEXTURE_DEPTH24_D8_FLOAT:
+						{
+							const auto compare_mode = tex.zfunc();
+							if (result.textures_alpha_kill[i] == 0 &&
+								compare_mode < rsx::comparison_function::always &&
+								compare_mode > rsx::comparison_function::never)
+								result.shadow_textures |= (1 << i);
+							break;
+						}
+						default:
+							LOG_ERROR(RSX, "Depth texture bound to pipeline with unexpected format 0x%X", format);
+						}
+					}
+				}
+			}
+		}
 	}
 
 	void thread::reset()
@@ -1991,7 +1902,7 @@ namespace rsx
 	{
 		for (GcmTileInfo &tile : tiles)
 		{
-			if (!tile.bound || (tile.location & 1) != (location & 1))
+			if (!tile.binded || (tile.location & 1) != (location & 1))
 			{
 				continue;
 			}
@@ -2007,7 +1918,7 @@ namespace rsx
 
 	tiled_region thread::get_tiled_address(u32 offset, u32 location)
 	{
-		u32 address = get_address(offset, location, HERE);
+		u32 address = get_address(offset, location);
 
 		GcmTileInfo *tile = find_tile(offset, location);
 		u32 base = 0;
@@ -2015,7 +1926,7 @@ namespace rsx
 		if (tile)
 		{
 			base = offset - tile->offset;
-			address = get_address(tile->offset, location, HERE);
+			address = get_address(tile->offset, location);
 		}
 
 		return{ address, base, tile, vm::_ptr<u8>(address) };
@@ -2026,7 +1937,7 @@ namespace rsx
 		u32 persistent_memory_size = 0;
 		u32 volatile_memory_size = 0;
 
-		volatile_memory_size += ::size32(layout.referenced_registers) * 16u;
+		volatile_memory_size += (u32)layout.referenced_registers.size() * 16u;
 
 		if (rsx::method_registers.current_draw_clause.command == rsx::draw_command::inlined_array)
 		{
@@ -2117,7 +2028,7 @@ namespace rsx
 		const s32 default_frequency_mask = (1 << 8);
 		const s32 swap_storage_mask = (1 << 29);
 		const s32 volatile_storage_mask = (1 << 30);
-		const s32 modulo_op_frequency_mask = (INT32_MIN);
+		const s32 modulo_op_frequency_mask = (1 << 31);
 
 		const u32 modulo_mask = rsx::method_registers.frequency_divider_operation_mask();
 		const auto max_index = (first_vertex + vertex_count) - 1;
@@ -2126,7 +2037,7 @@ namespace rsx
 		{
 			if (layout.attribute_placement[index] == attribute_buffer_placement::none)
 			{
-				reinterpret_cast<u64*>(buffer)[index] = 0;
+				((u64*)buffer)[index] = 0ull;
 				continue;
 			}
 
@@ -2267,8 +2178,8 @@ namespace rsx
 
 	void thread::write_vertex_data_to_memory(const vertex_input_layout& layout, u32 first_vertex, u32 vertex_count, void *persistent_data, void *volatile_data)
 	{
-		auto transient = static_cast<char*>(volatile_data);
-		auto persistent = static_cast<char*>(persistent_data);
+		char *transient = (char *)volatile_data;
+		char *persistent = (char *)persistent_data;
 
 		auto &draw_call = rsx::method_registers.current_draw_clause;
 
@@ -2314,7 +2225,7 @@ namespace rsx
 				const u32 data_size = range.second * block.attribute_stride;
 				const u32 vertex_base = range.first * block.attribute_stride;
 
-				g_fxo->get<rsx::dma_manager>()->copy(persistent, vm::_ptr<char>(block.real_offset_address) + vertex_base, data_size);
+				g_dma_manager.copy(persistent, (char*)vm::base(block.real_offset_address) + vertex_base, data_size);
 				persistent += data_size;
 			}
 		}
@@ -2343,6 +2254,11 @@ namespace rsx
 
 	void thread::check_zcull_status(bool framebuffer_swap)
 	{
+		if (g_cfg.video.disable_zcull_queries)
+			return;
+
+		bool testing_enabled = zcull_pixel_cnt_enabled || zcull_stats_enabled;
+
 		if (framebuffer_swap)
 		{
 			zcull_surface_active = false;
@@ -2353,11 +2269,9 @@ namespace rsx
 				//Find zeta address in bound zculls
 				for (const auto& zcull : zculls)
 				{
-					if (zcull.bound &&
-						rsx::to_surface_depth_format(zcull.zFormat) == m_depth_surface_info.depth_format &&
-						rsx::to_surface_antialiasing(zcull.aaFormat) == rsx::method_registers.surface_antialias())
+					if (zcull.binded)
 					{
-						const u32 rsx_address = rsx::get_address(zcull.offset, CELL_GCM_LOCATION_LOCAL, HERE);
+						const u32 rsx_address = rsx::get_address(zcull.offset, CELL_GCM_LOCATION_LOCAL);
 						if (rsx_address == zeta_address)
 						{
 							zcull_surface_active = true;
@@ -2369,12 +2283,15 @@ namespace rsx
 		}
 
 		zcull_ctrl->set_enabled(this, zcull_rendering_enabled);
-		zcull_ctrl->set_status(this, zcull_surface_active, zcull_pixel_cnt_enabled, zcull_stats_enabled);
+		zcull_ctrl->set_active(this, zcull_rendering_enabled && testing_enabled && zcull_surface_active);
 	}
 
 	void thread::clear_zcull_stats(u32 type)
 	{
-		zcull_ctrl->clear(this, type);
+		if (g_cfg.video.disable_zcull_queries)
+			return;
+
+		zcull_ctrl->clear(this);
 	}
 
 	void thread::get_zcull_stats(u32 type, vm::addr_t sink)
@@ -2394,7 +2311,7 @@ namespace rsx
 				return;
 			}
 			default:
-				rsx_log.error("Unknown zcull stat type %d", type);
+				LOG_ERROR(RSX, "Unknown zcull stat type %d", type);
 				break;
 			}
 		}
@@ -2402,85 +2319,19 @@ namespace rsx
 		vm::_ref<atomic_t<CellGcmReportData>>(sink).store({ timestamp(), value, 0});
 	}
 
-	u32 thread::copy_zcull_stats(u32 memory_range_start, u32 memory_range, u32 destination)
-	{
-		return zcull_ctrl->copy_reports_to(memory_range_start, memory_range, destination);
-	}
-
-	void thread::enable_conditional_rendering(vm::addr_t ref)
-	{
-		cond_render_ctrl.enable_conditional_render(this, ref);
-
-		auto result = zcull_ctrl->find_query(ref, true);
-		if (result.found)
-		{
-			if (!result.queries.empty())
-			{
-				cond_render_ctrl.set_eval_sources(result.queries);
-				sync_hint(FIFO_hint::hint_conditional_render_eval, cond_render_ctrl.eval_sources.front());
-			}
-			else
-			{
-				bool failed = (result.raw_zpass_result == 0);
-				cond_render_ctrl.set_eval_result(this, failed);
-			}
-		}
-		else
-		{
-			cond_render_ctrl.eval_result(this);
-		}
-	}
-
-	void thread::disable_conditional_rendering()
-	{
-		cond_render_ctrl.disable_conditional_render(this);
-	}
-
-	void thread::begin_conditional_rendering(const std::vector<reports::occlusion_query_info*>& /*sources*/)
-	{
-		cond_render_ctrl.hw_cond_active = true;
-		cond_render_ctrl.eval_sources.clear();
-	}
-
-	void thread::end_conditional_rendering()
-	{
-		cond_render_ctrl.hw_cond_active = false;
-	}
-
 	void thread::sync()
 	{
-		if (zcull_ctrl->has_pending())
-		{
-			if (g_cfg.video.relaxed_zcull_sync)
-			{
-				// Emit zcull sync hint and update; guarantees results to be written shortly after this event
-				zcull_ctrl->update(this, 0, true);
-			}
-			else
-			{
-				zcull_ctrl->sync(this);
-			}
-		}
+		zcull_ctrl->sync(this);
 
 		// Fragment constants may have been updated
 		m_graphics_state |= rsx::pipeline_state::fragment_constants_dirty;
 
 		// DMA sync; if you need this, don't use MTRSX
-		// g_fxo->get<rsx::dma_manager>()->sync();
+		// g_dma_manager.sync();
 
 		//TODO: On sync every sub-unit should finish any pending tasks
 		//Might cause zcull lockup due to zombie 'unclaimed reports' which are not forcefully removed currently
 		//verify (HERE), async_tasks_pending.load() == 0;
-	}
-
-	void thread::sync_hint(FIFO_hint /*hint*/, void* args)
-	{
-		zcull_ctrl->on_sync_hint(args);
-	}
-
-	bool thread::is_fifo_idle() const
-	{
-		return ctrl == nullptr || ctrl->get == (ctrl->put & ~3);
 	}
 
 	void thread::flush_fifo()
@@ -2489,105 +2340,9 @@ namespace rsx
 		fifo_ctrl->sync_get();
 	}
 
-	void thread::recover_fifo()
+	void thread::read_barrier(u32 memory_address, u32 memory_range)
 	{
-		const u64 current_time = get_system_time();
-
-		if (recovered_fifo_cmds_history.size() == 20u)
-		{
-			const auto cmd_info = recovered_fifo_cmds_history.front();
-
-			// Check timestamp of last tracked cmd
-			if (current_time - cmd_info.timestamp < 2'000'000u)
-			{
-				// Probably hopeless
-				fmt::throw_exception("Dead FIFO commands queue state has been detected!\nTry increasing \"Driver Wake-Up Delay\" setting in Advanced settings." HERE);
-			}
-
-			// Erase the last command from history, keep the size of the queue the same
-			recovered_fifo_cmds_history.pop();
-		}
-
-		// Error. Should reset the queue
-		fifo_ctrl->set_get(restore_point);
-		fifo_ret_addr = saved_fifo_ret;
-		std::this_thread::sleep_for(2ms);
-		fifo_ctrl->abort();
-
-		if (std::exchange(in_begin_end, false) && !rsx::method_registers.current_draw_clause.empty())
-		{
-			execute_nop_draw();
-			rsx::thread::end();
-		}
-
-		recovered_fifo_cmds_history.push({fifo_ctrl->last_cmd(), current_time});
-	}
-
-	void thread::fifo_wake_delay(u64 div)
-	{
-		// TODO: Nanoseconds accuracy
-		u64 remaining = g_cfg.video.driver_wakeup_delay;
-
-		if (!remaining)
-		{
-			return;
-		}
-
-		// Some cases do not need full delay
-		remaining = ::aligned_div(remaining, div);
-		const u64 until = get_system_time() + remaining;
-
-		while (true)
-		{
-#ifdef __linux__
-			// NOTE: Assumption that timer initialization has succeeded
-			u64 host_min_quantum = remaining <= 1000 ? 10 : 50;
-#else
-			// Host scheduler quantum for windows (worst case)
-			// NOTE: On ps3 this function has very high accuracy
-			constexpr u64 host_min_quantum = 500;
-#endif
-			if (remaining >= host_min_quantum)
-			{
-#ifdef __linux__
-				// Do not wait for the last quantum to avoid loss of accuracy
-				thread_ctrl::wait_for(remaining - ((remaining % host_min_quantum) + host_min_quantum), false);
-#else
-				// Wait on multiple of min quantum for large durations to avoid overloading low thread cpus
-				thread_ctrl::wait_for(remaining - (remaining % host_min_quantum), false);
-#endif
-			}
-			// TODO: Determine best value for yield delay
-			else if (remaining >= host_min_quantum / 2)
-			{
-				std::this_thread::yield();
-			}
-			else
-			{
-				busy_wait(100);
-			}
-
-			const u64 current = get_system_time();
-
-			if (current >= until)
-			{
-				break;
-			}
-
-			remaining = until - current;
-		}
-	}
-
-	u32 thread::get_fifo_cmd() const
-	{
-		// Last fifo cmd for logging and utility
-		return fifo_ctrl->last_cmd();
-	}
-
-	flags32_t thread::read_barrier(u32 memory_address, u32 memory_range, bool unconditional)
-	{
-		flags32_t zcull_flags = (unconditional)? reports::sync_none : reports::sync_defer_copy;
-		return zcull_ctrl->read_barrier(this, memory_address, memory_range, zcull_flags);
+		zcull_ctrl->read_barrier(this, memory_address, memory_range);
 	}
 
 	void thread::notify_zcull_info_changed()
@@ -2629,13 +2384,13 @@ namespace rsx
 
 				for (u32 ea = address >> 20, end = ea + (size >> 20); ea < end; ea++)
 				{
-					const u32 io = utils::ror32(iomap_table.io[ea], 20);
+					u32 io = RSXIOMem.io[ea];
 
-					if (io + 1)
+					if (io < 512)
 					{
 						unmap_status[io / 64] |= 1ull << (io & 63);
-						iomap_table.ea[io].release(-1);
-						iomap_table.io[ea].release(-1);
+						RSXIOMem.ea[io].raw() = 0xFFFF;
+						RSXIOMem.io[ea].raw() = 0xFFFF;
 					}
 				}
 
@@ -2645,28 +2400,20 @@ namespace rsx
 					if (u64 to_unmap = unmap_status[i])
 					{
 						// Each 64 entries are grouped by a bit
-						const u64 io_event = SYS_RSX_EVENT_UNMAPPED_BASE << i;
-						g_fxo->get<lv2_rsx_config>()->send_event(0, io_event, to_unmap);
+						const u64 io_event = 0x100000000ull << i;
+						sys_event_port_send(g_fxo->get<lv2_rsx_config>()->rsx_event_port, 0, io_event, to_unmap);
 					}
 				}
 			}
 			else
 			{
 				// TODO: Fix this
-				u32 ea = address >> 20, io = iomap_table.io[ea];
+				u32 ea = address >> 20, io = RSXIOMem.io[ea];
 
-				if (io + 1)
+				for (const u32 end = ea + (size >> 20); ea < end;)
 				{
-					io >>= 20;
-
-					const auto cfg = g_fxo->get<gcm_config>();
-					std::lock_guard lock(cfg->gcmio_mutex);
-
-					for (const u32 end = ea + (size >> 20); ea < end;)
-					{
-						cfg->offsetTable.ioAddress[ea++] = 0xFFFF;
-						cfg->offsetTable.eaAddress[io++] = 0xFFFF;
-					}
+					offsetTable.ioAddress[ea++] = 0xFFFF;
+					offsetTable.eaAddress[io++] = 0xFFFF;
 				}
 			}
 
@@ -2707,43 +2454,21 @@ namespace rsx
 	//Pause/cont wrappers for FIFO ctrl. Never call this from rsx thread itself!
 	void thread::pause()
 	{
-		external_interrupt_lock++;
-
-		while (!external_interrupt_ack)
+		external_interrupt_lock.store(true);
+		while (!external_interrupt_ack.load())
 		{
 			if (Emu.IsStopped())
 				break;
 
 			_mm_pause();
 		}
+		external_interrupt_ack.store(false);
 	}
 
 	void thread::unpause()
 	{
 		// TODO: Clean this shit up
-		external_interrupt_lock--;
-	}
-
-	void thread::wait_pause()
-	{
-		do
-		{
-			if (g_cfg.video.multithreaded_rsx)
-			{
-				g_fxo->get<rsx::dma_manager>()->sync();
-			}
-
-			external_interrupt_ack.store(true);
-
-			while (external_interrupt_lock)
-			{
-				// TODO: Investigate non busy-spinning method
-				_mm_pause();
-			}
-
-			external_interrupt_ack.store(false);
-		}
-		while (external_interrupt_lock);
+		external_interrupt_lock.store(false);
 	}
 
 	u32 thread::get_load()
@@ -2756,7 +2481,7 @@ namespace rsx
 			const auto elapsed = timestamp - performance_counters.last_update_timestamp;
 
 			if (elapsed > idle)
-				performance_counters.approximate_load = static_cast<u32>((elapsed - idle) * 100 / elapsed);
+				performance_counters.approximate_load = (u32)((elapsed - idle) * 100 / elapsed);
 			else
 				performance_counters.approximate_load = 0u;
 
@@ -2771,9 +2496,10 @@ namespace rsx
 	void thread::on_frame_end(u32 buffer, bool forced)
 	{
 		// Marks the end of a frame scope GPU-side
-		if (g_user_asked_for_frame_capture.exchange(false) && !capture_current_frame)
+		if (user_asked_for_frame_capture && !capture_current_frame)
 		{
 			capture_current_frame = true;
+			user_asked_for_frame_capture = false;
 			frame_debug.reset();
 			frame_capture.reset();
 
@@ -2799,19 +2525,20 @@ namespace rsx
 				f.write(os.str());
 			}
 
-			rsx_log.success("capture successful: %s", filePath.c_str());
+			LOG_SUCCESS(RSX, "capture successful: %s", filePath.c_str());
 
 			frame_capture.reset();
 			Emu.Pause();
 		}
 
+		// Reset zcull ctrl
+		zcull_ctrl->set_active(this, false);
+		zcull_ctrl->clear(this);
+
 		if (zcull_ctrl->has_pending())
 		{
-			// NOTE: This is a workaround for buggy games.
-			// Some applications leave the zpass/stats gathering active but don't use the information.
-			// This can lead to the zcull unit using up all the memory queueing up operations that never get consumed.
-			// Seen in Diablo III and Yakuza 5
-			zcull_ctrl->clear(this, CELL_GCM_ZPASS_PIXEL_CNT | CELL_GCM_ZCULL_STATS);
+			LOG_TRACE(RSX, "Dangling reports found, discarding...");
+			zcull_ctrl->sync(this);
 		}
 
 		// Save current state
@@ -2819,7 +2546,7 @@ namespace rsx
 		m_queued_flip.push(buffer);
 		m_queued_flip.skip_frame = skip_current_frame;
 
-		if (!forced) [[likely]]
+		if (LIKELY(!forced))
 		{
 			if (!g_cfg.video.disable_FIFO_reordering)
 			{
@@ -2832,8 +2559,8 @@ namespace rsx
 			{
 				m_skip_frame_ctr++;
 
-				if (m_skip_frame_ctr >= g_cfg.video.consecutive_frames_to_draw)
-					m_skip_frame_ctr = -g_cfg.video.consecutive_frames_to_skip;
+				if (m_skip_frame_ctr == g_cfg.video.consequtive_frames_to_draw)
+					m_skip_frame_ctr = -g_cfg.video.consequtive_frames_to_skip;
 
 				skip_current_frame = (m_skip_frame_ctr < 0);
 			}
@@ -2848,7 +2575,7 @@ namespace rsx
 
 			if (g_cfg.video.frame_skip_enabled)
 			{
-				rsx_log.error("Frame skip is not compatible with this application");
+				LOG_ERROR(RSX, "Frame skip is not compatible with this application");
 			}
 		}
 
@@ -2899,38 +2626,33 @@ namespace rsx
 		case frame_limit_type::_50: limit = 50.; break;
 		case frame_limit_type::_60: limit = 60.; break;
 		case frame_limit_type::_30: limit = 30.; break;
-		case frame_limit_type::_auto: limit = static_cast<double>(g_cfg.video.vblank_rate); break;
+		case frame_limit_type::_auto: limit = fps_limit; break; // TODO
 		default:
 			break;
 		}
 
 		if (limit)
 		{
-			const u64 time = get_system_time() - Emu.GetPauseTime();
-			const u64 needed_us = static_cast<u64>(1000000 / limit);
+			const u64 time = get_system_time() - Emu.GetPauseTime() - start_rsx_time;
 
 			if (int_flip_index == 0)
 			{
-				target_rsx_flip_time = time;
+				start_rsx_time = time;
 			}
 			else
 			{
-				do
+				// Convert limit to expected time value
+				double expected = int_flip_index * 1000000. / limit;
+
+				while (time >= expected + 1000000. / limit)
 				{
-					target_rsx_flip_time += needed_us;
+					expected = int_flip_index++ * 1000000. / limit;
 				}
-				while (time >= target_rsx_flip_time + needed_us);
 
-				if (target_rsx_flip_time > time + 1000)
+				if (expected > time + 1000)
 				{
-					const auto delay_us = target_rsx_flip_time - time;
-					lv2_obj::wait_timeout<false, false>(delay_us);
-
-					if (thread_ctrl::state() == thread_state::aborting)
-					{
-						return;
-					}
-
+					const auto delay_us = static_cast<s64>(expected - time);
+					std::this_thread::sleep_for(std::chrono::milliseconds{ delay_us / 1000 });
 					performance_counters.idle_time += delay_us;
 				}
 			}
@@ -2948,12 +2670,6 @@ namespace rsx
 		flip_status = CELL_GCM_DISPLAY_FLIP_STATUS_DONE;
 		m_queued_flip.in_progress = false;
 
-		if (!isHLE)
-		{
-			sys_rsx_context_attribute(0x55555555, 0xFEC, buffer, 0, 0, 0);
-			return;
-		}
-
 		if (flip_handler)
 		{
 			intr_thread->cmd_list
@@ -2965,31 +2681,33 @@ namespace rsx
 
 			thread_ctrl::notify(*intr_thread);
 		}
+
+		sys_rsx_context_attribute(0x55555555, 0xFEC, buffer, 0, 0, 0);
 	}
 
 
 	namespace reports
 	{
-		ZCULL_control::ZCULL_control()
+		void ZCULL_control::set_enabled(class ::rsx::thread* ptimer, bool state)
 		{
-			for (auto& query : m_occlusion_query_data)
+			if (state != enabled)
 			{
-				m_free_occlusion_pool.push(&query);
+				enabled = state;
+
+				if (active && !enabled)
+					set_active(ptimer, false);
 			}
 		}
 
-		ZCULL_control::~ZCULL_control()
-		{}
-
-		void ZCULL_control::set_active(class ::rsx::thread* ptimer, bool state, bool flush_queue)
+		void ZCULL_control::set_active(class ::rsx::thread* ptimer, bool state)
 		{
-			if (state != host_queries_active)
+			if (state != active)
 			{
-				host_queries_active = state;
+				active = state;
 
 				if (state)
 				{
-					verify(HERE), unit_enabled && m_current_task == nullptr;
+					verify(HERE), enabled && m_current_task == nullptr;
 					allocate_new_query(ptimer);
 					begin_occlusion_query(m_current_task);
 				}
@@ -3001,8 +2719,6 @@ namespace rsx
 						end_occlusion_query(m_current_task);
 						m_current_task->active = false;
 						m_current_task->pending = true;
-						m_current_task->sync_tag = m_timer++;
-						m_current_task->timestamp = m_tsc;
 
 						m_pending_writes.push_back({});
 						m_pending_writes.back().query = m_current_task;
@@ -3011,65 +2727,10 @@ namespace rsx
 					else
 					{
 						discard_occlusion_query(m_current_task);
-						free_query(m_current_task);
 						m_current_task->active = false;
 					}
 
 					m_current_task = nullptr;
-					update(ptimer, 0u, flush_queue);
-				}
-			}
-		}
-
-		void ZCULL_control::check_state(class ::rsx::thread* ptimer, bool flush_queue)
-		{
-			// NOTE: Only enable host queries if pixel count is active to save on resources
-			// Can optionally be enabled for either stats enabled or zpass enabled for accuracy
-			const bool data_stream_available = write_enabled && (zpass_count_enabled /*|| stats_enabled*/);
-			if (host_queries_active && !data_stream_available)
-			{
-				// Stop
-				set_active(ptimer, false, flush_queue);
-			}
-			else if (!host_queries_active && data_stream_available && unit_enabled)
-			{
-				// Start
-				set_active(ptimer, true, flush_queue);
-			}
-		}
-
-		void ZCULL_control::set_enabled(class ::rsx::thread* ptimer, bool state, bool flush_queue)
-		{
-			if (state != unit_enabled)
-			{
-				unit_enabled = state;
-				check_state(ptimer, flush_queue);
-			}
-		}
-
-		void ZCULL_control::set_status(class ::rsx::thread* ptimer, bool surface_active, bool zpass_active, bool zcull_stats_active, bool flush_queue)
-		{
-			write_enabled = surface_active;
-			zpass_count_enabled = zpass_active;
-			stats_enabled = zcull_stats_active;
-
-			check_state(ptimer, flush_queue);
-
-			// Disabled since only ZPASS is implemented right now
-			if (false) //(m_current_task && m_current_task->active)
-			{
-				// Data check
-				u32 expected_type = 0;
-				if (zpass_active) expected_type |= CELL_GCM_ZPASS_PIXEL_CNT;
-				if (zcull_stats_active) expected_type |= CELL_GCM_ZCULL_STATS;
-
-				if (m_current_task->data_type != expected_type) [[unlikely]]
-				{
-					rsx_log.error("ZCULL queue interrupted by data type change!");
-
-					// Stop+start the current setup
-					set_active(ptimer, false, false);
-					set_active(ptimer, true, false);
 				}
 			}
 		}
@@ -3084,8 +2745,6 @@ namespace rsx
 
 				m_current_task->active = false;
 				m_current_task->pending = true;
-				m_current_task->timestamp = m_tsc;
-				m_current_task->sync_tag = m_timer++;
 				m_pending_writes.back().query = m_current_task;
 
 				allocate_new_query(ptimer);
@@ -3093,16 +2752,8 @@ namespace rsx
 			}
 			else
 			{
-				// Spam; send null query down the pipeline to copy the last result
-				// Might be used to capture a timestamp (verify)
-
-				if (m_pending_writes.empty())
-				{
-					// No need to queue this if there is no pending request in the pipeline anyway
-					write(sink, ptimer->timestamp(), type, m_statistics_map[m_statistics_tag_id]);
-					return;
-				}
-
+				//Spam; send null query down the pipeline to copy the last result
+				//Might be used to capture a timestamp (verify)
 				m_pending_writes.push_back({});
 			}
 
@@ -3112,15 +2763,13 @@ namespace rsx
 				if (!It->sink)
 				{
 					It->counter_tag = m_statistics_tag_id;
+					It->due_tsc = get_system_time() + m_cycles_delay;
 					It->sink = sink;
 					It->type = type;
 
 					if (forwarder != &(*It))
 					{
-						// Not the last one in the chain, forward the writing operation to the last writer
-						// Usually comes from truncated queries caused by disabling the testing
-						verify(HERE), It->query;
-
+						//Not the last one in the chain, forward the writing operation to the last writer
 						It->forwarder = forwarder;
 						It->query->owned = true;
 					}
@@ -3132,12 +2781,6 @@ namespace rsx
 			}
 
 			ptimer->async_tasks_pending++;
-
-			if (m_statistics_map[m_statistics_tag_id] != 0)
-			{
-				// Flush guaranteed results; only one positive is needed
-				update(ptimer);
-			}
 		}
 
 		void ZCULL_control::allocate_new_query(::rsx::thread* ptimer)
@@ -3145,60 +2788,53 @@ namespace rsx
 			int retries = 0;
 			while (true)
 			{
-				if (!m_free_occlusion_pool.empty())
+				for (u32 n = 0; n < occlusion_query_count; ++n)
 				{
-					m_current_task = m_free_occlusion_pool.top();
-					m_free_occlusion_pool.pop();
+					if (m_occlusion_query_data[n].pending || m_occlusion_query_data[n].active)
+						continue;
 
-					m_current_task->data_type = 0;
+					m_current_task = &m_occlusion_query_data[n];
 					m_current_task->num_draws = 0;
 					m_current_task->result = 0;
+					m_current_task->sync_timestamp = 0;
 					m_current_task->active = true;
 					m_current_task->owned = false;
-					m_current_task->sync_tag = 0;
-					m_current_task->timestamp = 0;
-
-					// Flags determine what kind of payload is carried by queries in the 'report'
-					if (zpass_count_enabled) m_current_task->data_type |= CELL_GCM_ZPASS_PIXEL_CNT;
-					if (stats_enabled) m_current_task->data_type |= CELL_GCM_ZCULL_STATS;
-
 					return;
 				}
 
 				if (retries > 0)
 				{
-					fmt::throw_exception("Allocation failed!");
+					LOG_ERROR(RSX, "ZCULL report queue is overflowing!!");
+					m_statistics_map[m_statistics_tag_id] = 1;
+
+					verify(HERE), m_pending_writes.front().sink == 0;
+					m_pending_writes.clear();
+
+					for (auto &query : m_occlusion_query_data)
+					{
+						discard_occlusion_query(&query);
+						query.pending = false;
+					}
+
+					m_current_task = &m_occlusion_query_data[0];
+					m_current_task->num_draws = 0;
+					m_current_task->result = 0;
+					m_current_task->sync_timestamp = 0;
+					m_current_task->active = true;
+					m_current_task->owned = false;
+					return;
 				}
 
-				// All slots are occupied, try to pop the earliest entry
-
-				if (!m_pending_writes.front().query)
-				{
-					// If this happens, the assert above will fire. There should never be a queue header with no work to be done
-					rsx_log.error("Close to our death.");
-				}
-
-				m_next_tsc = 0;
-				update(ptimer, m_pending_writes.front().sink);
+				//All slots are occupied, try to pop the earliest entry
+				m_tsc += max_zcull_delay_us;
+				update(ptimer);
 
 				retries++;
 			}
 		}
 
-		void ZCULL_control::free_query(occlusion_query_info* query)
+		void ZCULL_control::clear(class ::rsx::thread* ptimer)
 		{
-			query->pending = false;
-			m_free_occlusion_pool.push(query);
-		}
-
-		void ZCULL_control::clear(class ::rsx::thread* ptimer, u32 type)
-		{
-			if (!(type & CELL_GCM_ZPASS_PIXEL_CNT))
-			{
-				// Other types do not generate queries at the moment
-				return;
-			}
-
 			if (!m_pending_writes.empty())
 			{
 				//Remove any dangling/unclaimed queries as the information is lost anyway
@@ -3208,7 +2844,7 @@ namespace rsx
 					if (!It->sink)
 					{
 						discard_occlusion_query(It->query);
-						free_query(It->query);
+						It->query->pending = false;
 						valid_size--;
 						ptimer->async_tasks_pending--;
 						continue;
@@ -3227,16 +2863,9 @@ namespace rsx
 		void ZCULL_control::on_draw()
 		{
 			if (m_current_task)
-			{
 				m_current_task->num_draws++;
-				m_current_task->sync_tag = m_timer++;
-			}
-		}
 
-		void ZCULL_control::on_sync_hint(void* args)
-		{
-			auto query = static_cast<occlusion_query_info*>(args);
-			m_sync_tag = std::max(m_sync_tag, query->sync_tag);
+			m_cycles_delay = max_zcull_delay_us;
 		}
 
 		void ZCULL_control::write(vm::addr_t sink, u64 timestamp, u32 type, u32 value)
@@ -3263,68 +2892,14 @@ namespace rsx
 			vm::_ref<atomic_t<CellGcmReportData>>(sink).store({ timestamp, value, 0});
 		}
 
-		void ZCULL_control::write(queued_report_write* writer, u64 timestamp, u32 value)
-		{
-			write(writer->sink, timestamp, writer->type, value);
-
-			for (auto &addr : writer->sink_alias)
-			{
-				write(addr, timestamp, writer->type, value);
-			}
-		}
-
-		void ZCULL_control::retire(::rsx::thread* ptimer, queued_report_write* writer, u32 result)
-		{
-			if (!writer->forwarder)
-			{
-				// No other queries in the chain, write result
-				const auto value = (writer->type == CELL_GCM_ZPASS_PIXEL_CNT) ? m_statistics_map[writer->counter_tag] : result;
-				write(writer, ptimer->timestamp(), value);
-			}
-
-			if (writer->query && writer->query->sync_tag == ptimer->cond_render_ctrl.eval_sync_tag)
-			{
-				bool eval_failed;
-				if (!writer->forwarder) [[likely]]
-				{
-					// Normal evaluation
-					eval_failed = (result == 0u);
-				}
-				else
-				{
-					// Eval was inserted while ZCULL was active but not enqueued to write to memory yet
-					// write(addr) -> enable_zpass_stats -> eval_condition -> write(addr)
-					// In this case, use what already exists in memory, not the current counter
-					eval_failed = (vm::_ref<CellGcmReportData>(writer->sink).value == 0u);
-				}
-
-				ptimer->cond_render_ctrl.set_eval_result(ptimer, eval_failed);
-			}
-		}
-
 		void ZCULL_control::sync(::rsx::thread* ptimer)
 		{
 			if (!m_pending_writes.empty())
 			{
-				// Quick reverse scan to push commands ahead of time
-				for (auto It = m_pending_writes.rbegin(); It != m_pending_writes.rend(); ++It)
-				{
-					if (It->query && It->query->num_draws)
-					{
-						if (It->query->sync_tag > m_sync_tag)
-						{
-							// rsx_log.trace("[Performance warning] Query hint emit during sync command.");
-							ptimer->sync_hint(FIFO_hint::hint_zcull_sync, It->query);
-						}
-
-						break;
-					}
-				}
-
 				u32 processed = 0;
 				const bool has_unclaimed = (m_pending_writes.back().sink == 0);
 
-				// Write all claimed reports unconditionally
+				//Write all claimed reports unconditionally
 				for (auto &writer : m_pending_writes)
 				{
 					if (!writer.sink)
@@ -3345,10 +2920,7 @@ namespace rsx
 							if (query->result)
 							{
 								result += query->result;
-								if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
-								{
-									m_statistics_map[writer.counter_tag] += query->result;
-								}
+								m_statistics_map[writer.counter_tag] = result;
 							}
 						}
 						else
@@ -3357,10 +2929,13 @@ namespace rsx
 							discard_occlusion_query(query);
 						}
 
-						free_query(query);
+						query->pending = false;
 					}
 
-					retire(ptimer, &writer, result);
+					if (!writer.forwarder)
+						//No other queries in the chain, write result
+						write(writer.sink, ptimer->timestamp(), writer.type, result);
+
 					processed++;
 				}
 
@@ -3376,7 +2951,7 @@ namespace rsx
 
 					if (remaining == 1)
 					{
-						m_pending_writes[0] = std::move(m_pending_writes.back());
+						m_pending_writes.front() = m_pending_writes.back();
 						m_pending_writes.resize(1);
 					}
 					else
@@ -3398,9 +2973,19 @@ namespace rsx
 				//Decrement jobs counter
 				ptimer->async_tasks_pending -= processed;
 			}
+
+			if (ptimer->conditional_render_enabled && ptimer->conditional_render_test_address)
+			{
+				ptimer->conditional_render_test_failed = vm::read32(ptimer->conditional_render_test_address) == 0;
+				ptimer->conditional_render_test_address = 0;
+			}
+
+			//Critical, since its likely a WAIT_FOR_IDLE type has been processed, all results are considered available
+			m_cycles_delay = min_zcull_delay_us;
+			m_tsc = std::max(m_tsc, get_system_time());
 		}
 
-		void ZCULL_control::update(::rsx::thread* ptimer, u32 sync_address, bool hint)
+		void ZCULL_control::update(::rsx::thread* ptimer, u32 sync_address)
 		{
 			if (m_pending_writes.empty())
 			{
@@ -3414,48 +2999,15 @@ namespace rsx
 				return;
 			}
 
+			// Update timestamp and proceed with processing only if there is work to be done
+			m_tsc = std::max(m_tsc, get_system_time());
+
 			if (!sync_address)
 			{
-				if (hint || ptimer->async_tasks_pending + 0u >= max_safe_queue_depth)
+				if (m_tsc < front.due_tsc)
 				{
-					// Prepare the whole queue for reading. This happens when zcull activity is disabled or queue is too long
-					for (auto It = m_pending_writes.rbegin(); It != m_pending_writes.rend(); ++It)
-					{
-						if (It->query)
-						{
-							if (It->query->num_draws && It->query->sync_tag > m_sync_tag)
-							{
-								ptimer->sync_hint(FIFO_hint::hint_zcull_sync, It->query);
-								verify(HERE), It->query->sync_tag <= m_sync_tag;
-							}
-
-							break;
-						}
-					}
-				}
-
-				if (m_tsc = get_system_time(); m_tsc < m_next_tsc)
-				{
+					// Avoid spamming backend with report status updates
 					return;
-				}
-				else
-				{
-					// Schedule ahead
-					m_next_tsc = m_tsc + min_zcull_tick_us;
-
-					// Schedule a queue flush if needed
-					if (!g_cfg.video.relaxed_zcull_sync &&
-						front.query && front.query->num_draws && front.query->sync_tag > m_sync_tag)
-					{
-						const auto elapsed = m_tsc - front.query->timestamp;
-						if (elapsed > max_zcull_delay_us)
-						{
-							ptimer->sync_hint(FIFO_hint::hint_zcull_sync, front.query);
-							verify(HERE), front.query->sync_tag <= m_sync_tag;
-						}
-
-						return;
-					}
 				}
 			}
 
@@ -3479,7 +3031,7 @@ namespace rsx
 				u32 result = m_statistics_map[writer.counter_tag];
 
 				const bool force_read = (sync_address != 0);
-				if (force_read && writer.sink == sync_address && !writer.forwarder)
+				if (force_read && writer.sink == sync_address)
 				{
 					// Forced reads end here
 					sync_address = 0;
@@ -3490,7 +3042,7 @@ namespace rsx
 					verify(HERE), query->pending;
 
 					const bool implemented = (writer.type == CELL_GCM_ZPASS_PIXEL_CNT || writer.type == CELL_GCM_ZCULL_STATS3);
-					if (force_read)
+					if (force_read || writer.due_tsc < m_tsc)
 					{
 						if (implemented && !result && query->num_draws)
 						{
@@ -3499,10 +3051,7 @@ namespace rsx
 							if (query->result)
 							{
 								result += query->result;
-								if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
-								{
-									m_statistics_map[writer.counter_tag] += query->result;
-								}
+								m_statistics_map[writer.counter_tag] = result;
 							}
 						}
 						else
@@ -3522,10 +3071,7 @@ namespace rsx
 								if (query->result)
 								{
 									result += query->result;
-									if (query->data_type & CELL_GCM_ZPASS_PIXEL_CNT)
-									{
-										m_statistics_map[writer.counter_tag] += query->result;
-									}
+									m_statistics_map[writer.counter_tag] = result;
 								}
 							}
 							else
@@ -3541,12 +3087,16 @@ namespace rsx
 						}
 					}
 
-					free_query(query);
+					query->pending = false;
 				}
 
 				stat_tag_to_remove = writer.counter_tag;
 
-				retire(ptimer, &writer, result);
+				//only zpass supported right now
+				if (!writer.forwarder)
+					//No other queries in the chain, write result
+					write(writer.sink, ptimer->timestamp(), writer.type, result);
+
 				processed++;
 			}
 
@@ -3558,7 +3108,7 @@ namespace rsx
 				auto remaining = m_pending_writes.size() - processed;
 				if (remaining == 1)
 				{
-					m_pending_writes[0] = std::move(m_pending_writes.back());
+					m_pending_writes.front() = m_pending_writes.back();
 					m_pending_writes.resize(1);
 				}
 				else if (remaining)
@@ -3575,221 +3125,38 @@ namespace rsx
 			}
 		}
 
-		flags32_t ZCULL_control::read_barrier(::rsx::thread* ptimer, u32 memory_address, u32 memory_range, flags32_t flags)
+		void ZCULL_control::read_barrier(::rsx::thread* ptimer, u32 memory_address, u32 memory_range)
 		{
 			if (m_pending_writes.empty())
-				return result_none;
+				return;
 
 			const auto memory_end = memory_address + memory_range;
-
-			AUDIT(memory_end >= memory_address);
-
 			u32 sync_address = 0;
-			occlusion_query_info* query = nullptr;
 
 			for (auto It = m_pending_writes.crbegin(); It != m_pending_writes.crend(); ++It)
 			{
-				if (sync_address)
-				{
-					if (It->query)
-					{
-						sync_address = It->sink;
-						query = It->query;
-						break;
-					}
-
-					continue;
-				}
-
 				if (It->sink >= memory_address && It->sink < memory_end)
 				{
 					sync_address = It->sink;
-
-					// NOTE: If application is spamming requests, there may be no query attached
-					if (It->query)
-					{
-						query = It->query;
-						break;
-					}
+					break;
 				}
 			}
 
-			if (!sync_address || !query)
-				return result_none;
-
-			if (!(flags & sync_defer_copy))
+			if (sync_address)
 			{
-				if (!(flags & sync_no_notify))
-				{
-					if (query->sync_tag > m_sync_tag) [[unlikely]]
-					{
-						ptimer->sync_hint(FIFO_hint::hint_zcull_sync, query);
-						verify(HERE), m_sync_tag >= query->sync_tag;
-					}
-				}
-
-				// There can be multiple queries all writing to the same address, loop to flush all of them
-				while (query->pending && !Emu.IsStopped())
-				{
-					update(ptimer, sync_address);
-				}
-				return result_none;
+				update(ptimer, sync_address);
 			}
-
-			return result_zcull_intr;
 		}
 
-		flags32_t ZCULL_control::read_barrier(class ::rsx::thread* ptimer, u32 memory_address, occlusion_query_info* query)
+		occlusion_query_info* ZCULL_control::find_query(vm::addr_t sink_address)
 		{
-			while (query->pending && !Emu.IsStopped())
-			{
-				update(ptimer, memory_address);
-			}
-
-			return result_none;
-		}
-
-		query_search_result ZCULL_control::find_query(vm::addr_t sink_address, bool all)
-		{
-			query_search_result result{};
-			u32 stat_id = 0;
-
-			for (auto It = m_pending_writes.crbegin(); It != m_pending_writes.crend(); ++It)
-			{
-				if (stat_id) [[unlikely]]
-				{
-					if (It->counter_tag != stat_id)
-					{
-						if (result.found)
-						{
-							// Some result was found, return it instead
-							break;
-						}
-
-						// Zcull stats were cleared between this query and the required stats, result can only be 0
-						return { true, 0, {} };
-					}
-
-					if (It->query && It->query->num_draws)
-					{
-						result.found = true;
-						result.queries.push_back(It->query);
-
-						if (!all)
-						{
-							break;
-						}
-					}
-				}
-				else if (It->sink == sink_address)
-				{
-					if (It->query && It->query->num_draws)
-					{
-						result.found = true;
-						result.queries.push_back(It->query);
-
-						if (!all)
-						{
-							break;
-						}
-					}
-
-					stat_id = It->counter_tag;
-				}
-			}
-
-			return result;
-		}
-
-		u32 ZCULL_control::copy_reports_to(u32 start, u32 range, u32 dest)
-		{
-			u32 bytes_to_write = 0;
-			const auto memory_range = utils::address_range::start_length(start, range);
 			for (auto &writer : m_pending_writes)
 			{
-				if (!writer.sink)
-					break;
-
-				if (!writer.forwarder && memory_range.overlaps(writer.sink))
-				{
-					u32 address = (writer.sink - start) + dest;
-					writer.sink_alias.push_back(vm::cast(address));
-				}
+				if (writer.sink == sink_address)
+					return writer.query;
 			}
 
-			return bytes_to_write;
-		}
-
-
-		// Conditional rendering helpers
-		void conditional_render_eval::reset()
-		{
-			eval_address = 0;
-			eval_sync_tag = 0;
-			eval_sources.clear();
-
-			eval_failed = false;
-		}
-
-		bool conditional_render_eval::disable_rendering() const
-		{
-			return (enabled && eval_failed);
-		}
-
-		bool conditional_render_eval::eval_pending() const
-		{
-			return (enabled && eval_address);
-		}
-
-		void conditional_render_eval::enable_conditional_render(::rsx::thread* pthr, u32 address)
-		{
-			if (hw_cond_active)
-			{
-				verify(HERE), enabled;
-				pthr->end_conditional_rendering();
-			}
-
-			reset();
-
-			enabled = true;
-			eval_address = address;
-		}
-
-		void conditional_render_eval::disable_conditional_render(::rsx::thread* pthr)
-		{
-			if (hw_cond_active)
-			{
-				verify(HERE), enabled;
-				pthr->end_conditional_rendering();
-			}
-
-			reset();
-			enabled = false;
-		}
-
-		void conditional_render_eval::set_eval_sources(std::vector<occlusion_query_info*>& sources)
-		{
-			eval_sources = std::move(sources);
-			eval_sync_tag = eval_sources.front()->sync_tag;
-		}
-
-		void conditional_render_eval::set_eval_result(::rsx::thread* pthr, bool failed)
-		{
-			if (hw_cond_active)
-			{
-				verify(HERE), enabled;
-				pthr->end_conditional_rendering();
-			}
-
-			reset();
-			eval_failed = failed;
-		}
-
-		void conditional_render_eval::eval_result(::rsx::thread* pthr)
-		{
-			vm::ptr<CellGcmReportData> result = vm::cast(eval_address);
-			const bool failed = (result->value == 0u);
-			set_eval_result(pthr, failed);
+			return nullptr;
 		}
 	}
 }

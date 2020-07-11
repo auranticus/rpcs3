@@ -6,19 +6,31 @@
 #include <cstring>
 #include <stdio.h>
 #include <time.h>
-#include "Utilities/StrUtil.h"
-#include "Utilities/span.h"
 
 #include <memory>
-#include <string>
-#include <string_view>
 
-// Auxiliary functions (endian swap, xor).
+// Auxiliary functions (endian swap, xor and prng).
+
+void xor_key(unsigned char *dest, const u8* src1, const u8* src2)
+{
+	for(int i = 0; i < 0x10; i++)
+	{
+		dest[i] = src1[i] ^ src2[i];
+	}
+}
+
+void prng(unsigned char *dest, int size)
+{
+	srand((u32)time(0));
+
+	for(int i = 0; i < size; i++)
+		dest[i] = (unsigned char)(rand() & 0xFF);
+}
 
 // Hex string conversion auxiliary functions.
 u64 hex_to_u64(const char* hex_str)
 {
-	auto length = std::strlen(hex_str);
+	u32 length = (u32) strlen(hex_str);
 	u64 tmp = 0;
 	u64 result = 0;
 	char c;
@@ -42,8 +54,8 @@ u64 hex_to_u64(const char* hex_str)
 
 void hex_to_bytes(unsigned char* data, const char* hex_str, unsigned int str_length)
 {
-	auto strn_length = (str_length > 0) ? str_length : std::strlen(hex_str);
-	auto data_length = strn_length / 2;
+	u32 strn_length = (str_length > 0) ? str_length : (u32)std::strlen(hex_str);
+	u32 data_length = strn_length / 2;
 	char tmp_buf[3] = {0, 0, 0};
 
 	// Don't convert if the string length is odd.
@@ -54,11 +66,27 @@ void hex_to_bytes(unsigned char* data, const char* hex_str, unsigned int str_len
 			tmp_buf[0] = *hex_str++;
 			tmp_buf[1] = *hex_str++;
 
-			*data++ = static_cast<u8>(hex_to_u64(tmp_buf) & 0xFF);
+			*data++ = (u8)(hex_to_u64(tmp_buf) & 0xFF);
 		}
 	}
 }
 
+bool is_hex(const char* hex_str, unsigned int str_length)
+{
+	static const char hex_chars[] = "0123456789abcdefABCDEF";
+
+	if (hex_str == NULL)
+		return false;
+
+	unsigned int i;
+	for (i = 0; i < str_length; i++)
+	{
+		if (strchr(hex_chars, hex_str[i]) == 0)
+			return false;
+	}
+
+	return true;
+}
 
 // Crypto functions (AES128-CBC, AES128-ECB, SHA1-HMAC and AES-CMAC).
 void aescbc128_decrypt(unsigned char *key, unsigned char *iv, unsigned char *in, unsigned char *out, int len)
@@ -122,14 +150,11 @@ void cmac_hash_forge(unsigned char *key, int key_len, unsigned char *in, int in_
 
 char* extract_file_name(const char* file_path, char real_file_name[MAX_PATH])
 {
-	std::string_view v(file_path);
-
-	if (auto pos = v.find_last_of("/\\"); pos != umax)
-	{
-		v.remove_prefix(pos + 1);
-	}
-
-	gsl::span r(real_file_name, MAX_PATH);
-	strcpy_trunc(r, v);
+	size_t file_path_len = strlen(file_path);
+	const char* p = strrchr(file_path, '/');
+	if (!p) p = strrchr(file_path, '\\');
+	if (p) file_path_len = file_path + file_path_len - p - 1;
+	strncpy(real_file_name, p ? (p + 1) : file_path, file_path_len + 1);
+	
 	return real_file_name;
 }

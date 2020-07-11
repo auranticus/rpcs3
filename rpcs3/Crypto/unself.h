@@ -1,15 +1,13 @@
-﻿#pragma once
+#pragma once
 
 #include "key_vault.h"
 #include "zlib.h"
 
 #include "Utilities/types.h"
 #include "Utilities/File.h"
-#include "util/logs.hpp"
+#include "Utilities/Log.h"
 
-LOG_CHANNEL(self_log, "SELF");
-
-struct AppInfo
+struct AppInfo 
 {
 	u64 authid;
 	u32 vendor_id;
@@ -340,16 +338,9 @@ struct SelfHeader
 	u64 se_controloff;
 	u64 se_controlsize;
 	u64 pad;
-
+	
 	void Load(const fs::file& f);
 	void Show(){}
-};
-
-struct SelfAdditionalInfo
-{
-	bool valid = false;
-	std::vector<ControlInfo> ctrl_info;
-	AppInfo app_info;
 };
 
 class SCEDecrypter
@@ -389,7 +380,7 @@ class SELFDecrypter
 	SceHeader sce_hdr;
 	SelfHeader self_hdr;
 	AppInfo app_info;
-
+	
 	// ELF64 header and program header/section header arrays.
 	Elf64_Ehdr elf64_hdr;
 	std::vector<Elf64_Shdr> shdr64_arr;
@@ -414,7 +405,7 @@ class SELFDecrypter
 	std::unique_ptr<u8[]> data_keys;
 	u32 data_keys_length;
 	std::unique_ptr<u8[]> data_buf;
-	u32 data_buf_length = 0;
+	u32 data_buf_length;
 
 	// Main key vault instance.
 	KeyVault key_v;
@@ -422,7 +413,7 @@ class SELFDecrypter
 public:
 	SELFDecrypter(const fs::file& s);
 	fs::file MakeElf(bool isElf32);
-	bool LoadHeaders(bool isElf32, SelfAdditionalInfo* out_info = nullptr);
+	bool LoadHeaders(bool isElf32);
 	void ShowHeaders(bool isElf32);
 	bool LoadMetadata(u8* klic_key);
 	bool DecryptData();
@@ -471,9 +462,9 @@ private:
 					// Check for errors (TODO: Probably safe to remove this once these changes have passed testing.)
 					switch (rv)
 					{
-					case Z_MEM_ERROR: self_log.error("MakeELF encountered a Z_MEM_ERROR!"); break;
-					case Z_BUF_ERROR: self_log.error("MakeELF encountered a Z_BUF_ERROR!"); break;
-					case Z_DATA_ERROR: self_log.error("MakeELF encountered a Z_DATA_ERROR!"); break;
+					case Z_MEM_ERROR: LOG_ERROR(LOADER, "MakeELF encountered a Z_MEM_ERROR!"); break;
+					case Z_BUF_ERROR: LOG_ERROR(LOADER, "MakeELF encountered a Z_BUF_ERROR!"); break;
+					case Z_DATA_ERROR: LOG_ERROR(LOADER, "MakeELF encountered a Z_DATA_ERROR!"); break;
 					default: break;
 					}
 
@@ -489,7 +480,7 @@ private:
 				}
 
 				// Advance the data buffer offset by data size.
-				data_buf_offset += ::narrow<u32>(meta_shdr[i].data_size, HERE);
+				data_buf_offset += meta_shdr[i].data_size;
 			}
 		}
 
@@ -506,8 +497,6 @@ private:
 	}
 };
 
-fs::file decrypt_self(fs::file elf_or_self, u8* klic_key = nullptr, SelfAdditionalInfo* additional_info = nullptr);
-bool verify_npdrm_self_headers(const fs::file& self, u8* klic_key = nullptr);
-
-union v128;
-v128 get_default_self_klic();
+extern fs::file decrypt_self(fs::file elf_or_self, u8* klic_key = nullptr);
+extern bool verify_npdrm_self_headers(const fs::file& self, u8* klic_key = nullptr);
+extern std::array<u8, 0x10> get_default_self_klic();

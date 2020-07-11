@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 
 #include "Common/BufferUtils.h"
+#include "Emu/System.h"
 #include "RSXOffload.h"
 #include "RSXThread.h"
 #include "rsx_utils.h"
@@ -10,23 +11,25 @@
 
 namespace rsx
 {
-	struct dma_manager::offload_thread
+	// initialization
+	void dma_manager::init()
 	{
-		lf_queue<transport_packet> m_work_queue;
-		atomic_t<u64> m_enqueued_count = 0;
-		atomic_t<u64> m_processed_count = 0;
-		transport_packet* m_current_job = nullptr;
+		m_worker_state = thread_state::created;
+		m_enqueued_count.store(0);
+		m_processed_count = 0;
 
-		std::thread::id m_thread_id;
+		// Empty work queue in case of stale contents
+		m_work_queue.pop_all();
 
-		void operator ()()
+		thread_ctrl::spawn("RSX offloader", [this]()
 		{
 			if (!g_cfg.video.multithreaded_rsx)
 			{
-				// Abort if disabled
+				// Abort
 				return;
 			}
 
+			// Register thread id
 			m_thread_id = std::this_thread::get_id();
 
 			if (g_cfg.core.thread_scheduler_enabled)
@@ -34,64 +37,44 @@ namespace rsx
 				thread_ctrl::set_thread_affinity_mask(thread_ctrl::get_affinity_mask(thread_class::rsx));
 			}
 
-			while (thread_ctrl::state() != thread_state::aborting)
+			while (m_worker_state != thread_state::finished)
 			{
-				for (auto&& job : m_work_queue.pop_all())
+				if (m_enqueued_count.load() != m_processed_count)
 				{
-					m_current_job = &job;
+					for (m_current_job = m_work_queue.pop_all(); m_current_job; m_current_job.pop_front())
+					{
+						switch (m_current_job->type)
+						{
+						case raw_copy:
+							memcpy(m_current_job->dst, m_current_job->src, m_current_job->length);
+							break;
+						case vector_copy:
+							memcpy(m_current_job->dst, m_current_job->opt_storage.data(), m_current_job->length);
+							break;
+						case index_emulate:
+							write_index_array_for_non_indexed_non_native_primitive_to_buffer(
+								reinterpret_cast<char*>(m_current_job->dst),
+								static_cast<rsx::primitive_type>(m_current_job->aux_param0),
+								m_current_job->length);
+							break;
+						default:
+							ASSUME(0);
+							fmt::throw_exception("Unreachable" HERE);
+						}
 
-					switch (job.type)
-					{
-					case raw_copy:
-					{
-						std::memcpy(job.dst, job.src, job.length);
-						break;
+						std::atomic_thread_fence(std::memory_order_release);
+						++m_processed_count;
 					}
-					case vector_copy:
-					{
-						std::memcpy(job.dst, job.opt_storage.data(), job.length);
-						break;
-					}
-					case index_emulate:
-					{
-						write_index_array_for_non_indexed_non_native_primitive_to_buffer(static_cast<char*>(job.dst), static_cast<rsx::primitive_type>(job.aux_param0), job.length);
-						break;
-					}
-					case callback:
-					{
-						rsx::get_current_renderer()->renderctl(job.aux_param0, job.src);
-						break;
-					}
-					default: ASSUME(0); fmt::throw_exception("Unreachable" HERE);
-					}
-
-					m_processed_count.release(m_processed_count + 1);
 				}
-
-				m_current_job = nullptr;
-
-				if (m_enqueued_count.load() == m_processed_count.load())
+				else
 				{
-					m_processed_count.notify_all();
+					// Yield
 					std::this_thread::yield();
 				}
 			}
 
-			m_processed_count = -1;
-			m_processed_count.notify_all();
-		}
-
-		static constexpr auto thread_name = "RSX Offloader"sv;
-	};
-
-
-	using dma_thread = named_thread<dma_manager::offload_thread>;
-
-	static_assert(std::is_default_constructible_v<dma_thread>);
-
-	// initialization
-	void dma_manager::init()
-	{
+			m_processed_count = m_enqueued_count.load();
+		});
 	}
 
 	// General transport
@@ -103,8 +86,8 @@ namespace rsx
 		}
 		else
 		{
-			g_fxo->get<dma_thread>()->m_enqueued_count++;
-			g_fxo->get<dma_thread>()->m_work_queue.push(dst, src, length);
+			++m_enqueued_count;
+			m_work_queue.push(dst, src, length);
 		}
 	}
 
@@ -116,8 +99,8 @@ namespace rsx
 		}
 		else
 		{
-			g_fxo->get<dma_thread>()->m_enqueued_count++;
-			g_fxo->get<dma_thread>()->m_work_queue.push(dst, src, length);
+			++m_enqueued_count;
+			m_work_queue.push(dst, src, length);
 		}
 	}
 
@@ -131,34 +114,23 @@ namespace rsx
 		}
 		else
 		{
-			g_fxo->get<dma_thread>()->m_enqueued_count++;
-			g_fxo->get<dma_thread>()->m_work_queue.push(dst, primitive, count);
+			++m_enqueued_count;
+			m_work_queue.push(dst, primitive, count);
 		}
-	}
-
-	// Backend callback
-	void dma_manager::backend_ctrl(u32 request_code, void* args)
-	{
-		verify(HERE), g_cfg.video.multithreaded_rsx;
-
-		g_fxo->get<dma_thread>()->m_enqueued_count++;
-		g_fxo->get<dma_thread>()->m_work_queue.push(request_code, args);
 	}
 
 	// Synchronization
 	bool dma_manager::is_current_thread() const
 	{
-		return std::this_thread::get_id() == g_fxo->get<dma_thread>()->m_thread_id;
+		return (std::this_thread::get_id() == m_thread_id);
 	}
 
-	bool dma_manager::sync()
+	void dma_manager::sync()
 	{
-		const auto _thr = g_fxo->get<dma_thread>();
-
-		if (_thr->m_enqueued_count.load() <= _thr->m_processed_count.load()) [[likely]]
+		if (LIKELY(m_enqueued_count.load() == m_processed_count))
 		{
 			// Nothing to do
-			return true;
+			return;
 		}
 
 		if (auto rsxthr = get_current_renderer(); rsxthr->is_current_thread())
@@ -166,10 +138,10 @@ namespace rsx
 			if (m_mem_fault_flag)
 			{
 				// Abort if offloader is in recovery mode
-				return false;
+				return;
 			}
 
-			while (_thr->m_enqueued_count.load() > _thr->m_processed_count.load())
+			while (m_enqueued_count.load() != m_processed_count)
 			{
 				rsxthr->on_semaphore_acquire_wait();
 				_mm_pause();
@@ -177,16 +149,14 @@ namespace rsx
 		}
 		else
 		{
-			while (_thr->m_enqueued_count.load() > _thr->m_processed_count.load())
+			while (m_enqueued_count.load() != m_processed_count)
 				_mm_pause();
 		}
-
-		return true;
 	}
 
 	void dma_manager::join()
 	{
-		*g_fxo->get<dma_thread>() = thread_state::aborting;
+		m_worker_state = thread_state::finished;
 		sync();
 	}
 
@@ -205,7 +175,7 @@ namespace rsx
 	// Fault recovery
 	utils::address_range dma_manager::get_fault_range(bool writing) const
 	{
-		const auto m_current_job = verify(HERE, g_fxo->get<dma_thread>()->m_current_job);
+		verify(HERE), m_current_job;
 
 		void *address = nullptr;
 		u32 range = m_current_job->length;

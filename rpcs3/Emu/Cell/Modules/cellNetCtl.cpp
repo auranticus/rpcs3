@@ -1,19 +1,12 @@
-﻿#include "stdafx.h"
-#include "Emu/system_config.h"
+#include "stdafx.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
-#include "Emu/IdManager.h"
-#include "Emu/Cell/lv2/sys_sync.h"
 
 #include "cellGame.h"
 #include "cellSysutil.h"
 #include "cellNetCtl.h"
 
 #include "Utilities/StrUtil.h"
-#include "Emu/IdManager.h"
-
-#include "Emu/NP/np_handler.h"
-
-#include <thread>
 
 LOG_CHANNEL(cellNetCtl);
 
@@ -96,62 +89,27 @@ error_code cellNetCtlInit()
 {
 	cellNetCtl.warning("cellNetCtlInit()");
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
+	return CELL_OK;
+}
 
-	if (nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_TERMINATED;
-	}
-
-	nph->is_netctl_init = true;
+error_code cellNetCtlTerm()
+{
+	cellNetCtl.warning("cellNetCtlTerm()");
 
 	return CELL_OK;
 }
 
-void cellNetCtlTerm()
-{
-	cellNetCtl.warning("cellNetCtlTerm()");
-
-	const auto nph      = g_fxo->get<named_thread<np_handler>>();
-	nph->is_netctl_init = false;
-}
-
-error_code cellNetCtlGetState(vm::ptr<s32> state)
+error_code cellNetCtlGetState(vm::ptr<u32> state)
 {
 	cellNetCtl.trace("cellNetCtlGetState(state=*0x%x)", state);
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!state)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
-
-	*state = nph->get_net_status();
-
+	*state = g_cfg.net.net_status;
 	return CELL_OK;
 }
 
 error_code cellNetCtlAddHandler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<void> arg, vm::ptr<s32> hid)
 {
 	cellNetCtl.todo("cellNetCtlAddHandler(handler=*0x%x, arg=*0x%x, hid=*0x%x)", handler, arg, hid);
-
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!hid)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
 
 	return CELL_OK;
 }
@@ -160,36 +118,12 @@ error_code cellNetCtlDelHandler(s32 hid)
 {
 	cellNetCtl.todo("cellNetCtlDelHandler(hid=0x%x)", hid);
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (hid > 3)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ID;
-	}
-
 	return CELL_OK;
 }
 
 error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 {
 	cellNetCtl.todo("cellNetCtlGetInfo(code=0x%x (%s), info=*0x%x)", code, InfoCodeToName(code), info);
-
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!info)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
 
 	if (code == CELL_NET_CTL_INFO_ETHER_ADDR)
 	{
@@ -198,7 +132,7 @@ error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 		return CELL_OK;
 	}
 
-	if (nph->get_net_status() == CELL_NET_CTL_STATE_Disconnected)
+	if (g_cfg.net.net_status == CELL_NET_CTL_STATE_Disconnected)
 	{
 		return CELL_NET_CTL_ERROR_NOT_CONNECTED;
 	}
@@ -213,7 +147,15 @@ error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 	}
 	else if (code == CELL_NET_CTL_INFO_IP_ADDRESS)
 	{
-		strcpy_trunc(info->ip_address, nph->get_ip());
+		if (g_cfg.net.net_status != CELL_NET_CTL_STATE_IPObtained)
+		{
+			// 0.0.0.0 seems to be the default address when no ethernet cables are connected to the PS3
+			strcpy_trunc(info->ip_address, "0.0.0.0");
+		}
+		else
+		{
+			strcpy_trunc(info->ip_address, g_cfg.net.ip_address);
+		}
 	}
 	else if (code == CELL_NET_CTL_INFO_NETMASK)
 	{
@@ -227,43 +169,14 @@ error_code cellNetCtlGetInfo(s32 code, vm::ptr<CellNetCtlInfo> info)
 	return CELL_OK;
 }
 
-error_code cellNetCtlNetStartDialogLoadAsync(vm::cptr<CellNetCtlNetStartDialogParam> param)
+error_code cellNetCtlNetStartDialogLoadAsync(vm::ptr<CellNetCtlNetStartDialogParam> param)
 {
 	cellNetCtl.error("cellNetCtlNetStartDialogLoadAsync(param=*0x%x)", param);
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!param)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
-
-	if (param->type >= CELL_NET_CTL_NETSTART_TYPE_MAX)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_TYPE;
-	}
-
-	if (param->size != 12u)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_SIZE;
-	}
-
-	// This is a hack for Diva F 2nd that registers the sysutil callback after calling this function.
-	g_fxo->init<named_thread>("Delayed cellNetCtlNetStartDialogLoadAsync messages", []()
-	{
-		lv2_obj::wait_timeout(500000, nullptr);
-
-		if (thread_ctrl::state() != thread_state::aborting)
-		{
-			sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED, 0);
-			sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED, 0);
-		}
-	});
+	// TODO: Actually sign into PSN or an emulated network similar to PSN (ESN)
+	// TODO: Properly open the dialog prompt for sign in
+	sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED, 0);
+	sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED, 0);
 
 	return CELL_OK;
 }
@@ -272,13 +185,6 @@ error_code cellNetCtlNetStartDialogAbortAsync()
 {
 	cellNetCtl.error("cellNetCtlNetStartDialogAbortAsync()");
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
 	return CELL_OK;
 }
 
@@ -286,25 +192,7 @@ error_code cellNetCtlNetStartDialogUnloadAsync(vm::ptr<CellNetCtlNetStartDialogR
 {
 	cellNetCtl.warning("cellNetCtlNetStartDialogUnloadAsync(result=*0x%x)", result);
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
-	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!result)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
-
-	if (result->size != 8u)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_SIZE;
-	}
-
-	result->result = nph->get_net_status() == CELL_NET_CTL_STATE_IPObtained ? 0 : CELL_NET_CTL_ERROR_DIALOG_CANCELED;
-
+	result->result = CELL_NET_CTL_ERROR_DIALOG_CANCELED;
 	sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED, 0);
 
 	return CELL_OK;
@@ -312,22 +200,11 @@ error_code cellNetCtlNetStartDialogUnloadAsync(vm::ptr<CellNetCtlNetStartDialogR
 
 error_code cellNetCtlGetNatInfo(vm::ptr<CellNetCtlNatInfo> natInfo)
 {
-	cellNetCtl.warning("cellNetCtlGetNatInfo(natInfo=*0x%x)", natInfo);
+	cellNetCtl.todo("cellNetCtlGetNatInfo(natInfo=*0x%x)", natInfo);
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (!nph->is_netctl_init)
+	if (natInfo->size == 0)
 	{
-		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
-	}
-
-	if (!natInfo)
-	{
-		return CELL_NET_CTL_ERROR_INVALID_ADDR;
-	}
-
-	if (natInfo->size != 16u && natInfo->size != 20u)
-	{
+		cellNetCtl.error("cellNetCtlGetNatInfo : CELL_NET_CTL_ERROR_INVALID_SIZE");
 		return CELL_NET_CTL_ERROR_INVALID_SIZE;
 	}
 
@@ -438,7 +315,7 @@ error_code cellGameUpdateCheckStartAsyncEx(vm::cptr<CellGameUpdateParam> param, 
 	cellNetCtl.todo("cellGameUpdateCheckStartAsyncEx(param=*0x%x, cb_func=*0x%x, userdata=*0x%x)", param, cb_func, userdata);
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
-		cb_func(ppu, vm::make_var(CellGameUpdateResult{CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, CELL_OK}), userdata);
+		cb_func(ppu, vm::make_var(CellGameUpdateResult{ CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, CELL_OK, 0x0, 0x0}), userdata);
 		return CELL_OK;
 	});
 	return CELL_OK;
@@ -450,7 +327,7 @@ error_code cellGameUpdateCheckFinishAsyncEx(vm::ptr<CellGameUpdateCallbackEx> cb
 	const s32 PROCESSING_COMPLETE = 5;
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
-		cb_func(ppu, vm::make_var(CellGameUpdateResult{CELL_GAMEUPDATE_RESULT_STATUS_FINISHED, CELL_OK}), userdata);
+		cb_func(ppu, vm::make_var(CellGameUpdateResult{ CELL_GAMEUPDATE_RESULT_STATUS_FINISHED, CELL_OK, 0x0, 0x0}), userdata);
 		return CELL_OK;
 	});
 	return CELL_OK;
@@ -461,7 +338,7 @@ error_code cellGameUpdateCheckStartWithoutDialogAsyncEx(vm::ptr<CellGameUpdateCa
 	cellNetCtl.todo("cellGameUpdateCheckStartWithoutDialogAsyncEx(cb_func=*0x%x, userdata=*0x%x)", cb_func, userdata);
 	sysutil_register_cb([=](ppu_thread& ppu) -> s32
 	{
-		cb_func(ppu, vm::make_var(CellGameUpdateResult{CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, CELL_OK}), userdata);
+		cb_func(ppu, vm::make_var(CellGameUpdateResult{ CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE, CELL_OK, 0x0, 0x0}), userdata);
 		return CELL_OK;
 	});
 	return CELL_OK;

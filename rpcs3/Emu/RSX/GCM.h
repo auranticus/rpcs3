@@ -111,7 +111,12 @@ struct GcmZcullInfo
 	u32 sFunc;
 	u32 sRef;
 	u32 sMask;
-	bool bound = false;
+	bool binded;
+
+	GcmZcullInfo()
+	{
+		memset(this, 0, sizeof(*this));
+	}
 
 	CellGcmZcullInfo pack() const
 	{
@@ -137,7 +142,12 @@ struct GcmTileInfo
 	u32 comp;
 	u32 base;
 	u32 bank;
-	bool bound = false;
+	bool binded;
+
+	GcmTileInfo()
+	{
+		memset(this, 0, sizeof(*this));
+	}
 
 	CellGcmTileInfo pack() const
 	{

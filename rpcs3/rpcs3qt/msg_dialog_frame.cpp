@@ -1,17 +1,9 @@
-﻿#include "msg_dialog_frame.h"
-#include "custom_dialog.h"
+﻿
+#include "msg_dialog_frame.h"
 
-#include <QCoreApplication>
-#include <QPushButton>
-#include <QFormLayout>
-
-#ifdef _WIN32
-#include <QWinTHumbnailToolbar>
-#include <QWinTHumbnailToolbutton>
-#elif HAVE_QTDBUS
-#include <QtDBus/QDBusMessage>
-#include <QtDBus/QDBusConnection>
-#endif
+#include <QApplication>
+#include <QScreen>
+#include <QThread>
 
 constexpr auto qstr = QString::fromStdString;
 
@@ -35,7 +27,7 @@ void msg_dialog_frame::Create(const std::string& msg, const std::string& title)
 	layout->setFormAlignment(Qt::AlignHCenter);
 	layout->addRow(m_text);
 
-	auto l_AddGauge = [=, this](QProgressBar* &bar, QLabel* &text)
+	auto l_AddGauge = [=] (QProgressBar* &bar, QLabel* &text)
 	{
 		text = new QLabel("", m_dialog);
 		bar = new QProgressBar(m_dialog);
@@ -99,14 +91,14 @@ void msg_dialog_frame::Create(const std::string& msg, const std::string& title)
 			m_button_yes->setFocus();
 		}
 
-		connect(m_button_yes, &QAbstractButton::clicked, [this]()
+		connect(m_button_yes, &QAbstractButton::clicked, [=]
 		{
 			g_last_user_response = CELL_MSGDIALOG_BUTTON_YES;
 			on_close(CELL_MSGDIALOG_BUTTON_YES);
 			m_dialog->accept();
 		});
 
-		connect(m_button_no, &QAbstractButton::clicked, [this]()
+		connect(m_button_no, &QAbstractButton::clicked, [=]
 		{
 			g_last_user_response = CELL_MSGDIALOG_BUTTON_NO;
 			on_close(CELL_MSGDIALOG_BUTTON_NO);
@@ -131,7 +123,7 @@ void msg_dialog_frame::Create(const std::string& msg, const std::string& title)
 			m_button_ok->setFocus();
 		}
 
-		connect(m_button_ok, &QAbstractButton::clicked, [this]()
+		connect(m_button_ok, &QAbstractButton::clicked, [=]
 		{
 			g_last_user_response = CELL_MSGDIALOG_BUTTON_OK;
 			on_close(CELL_MSGDIALOG_BUTTON_OK);
@@ -141,7 +133,7 @@ void msg_dialog_frame::Create(const std::string& msg, const std::string& title)
 
 	m_dialog->setLayout(layout);
 
-	connect(m_dialog, &QDialog::rejected, [this]()
+	connect(m_dialog, &QDialog::rejected, [=]
 	{
 		if (!type.disable_cancel)
 		{
@@ -174,8 +166,7 @@ msg_dialog_frame::msg_dialog_frame() {}
 msg_dialog_frame::~msg_dialog_frame()
 {
 #ifdef _WIN32
-	// QWinTaskbarProgress::hide() will crash if the application is already about to close, even if the object is not null.
-	if (m_tb_progress && !QCoreApplication::closingDown())
+	if (m_tb_progress)
 	{
 		m_tb_progress->hide();
 	}
@@ -227,7 +218,7 @@ void msg_dialog_frame::ProgressBarReset(u32 index)
 		m_gauge2->setValue(0);
 	}
 
-	if (index == taskbar_index + 0u)
+	if (index == taskbar_index)
 	{
 #ifdef _WIN32
 		if (m_tb_progress)
@@ -249,23 +240,23 @@ void msg_dialog_frame::ProgressBarInc(u32 index, u32 delta)
 
 	if (index == 0 && m_gauge1)
 	{
-		m_gauge1->setValue(std::min(m_gauge1->value() + static_cast<int>(delta), m_gauge1->maximum()));
+		m_gauge1->setValue(std::min(m_gauge1->value() + (int)delta, m_gauge1->maximum()));
 	}
 
 	if (index == 1 && m_gauge2)
 	{
-		m_gauge2->setValue(std::min(m_gauge2->value() + static_cast<int>(delta), m_gauge2->maximum()));
+		m_gauge2->setValue(std::min(m_gauge2->value() + (int)delta, m_gauge2->maximum()));
 	}
 
-	if (index == taskbar_index + 0u || taskbar_index == -1)
+	if (index == taskbar_index || taskbar_index == -1)
 	{
 #ifdef _WIN32
 		if (m_tb_progress)
 		{
-			m_tb_progress->setValue(std::min(m_tb_progress->value() + static_cast<int>(delta), m_tb_progress->maximum()));
+			m_tb_progress->setValue(std::min(m_tb_progress->value() + (int)delta, m_tb_progress->maximum()));
 		}
 #elif HAVE_QTDBUS
-		m_progress_value = std::min(m_progress_value + static_cast<int>(delta), m_gauge_max);
+		m_progress_value = std::min(m_progress_value + (int)delta, m_gauge_max);
 		UpdateProgress(m_progress_value);
 #endif
 	}
@@ -290,7 +281,7 @@ void msg_dialog_frame::ProgressBarSetLimit(u32 index, u32 limit)
 
 	bool set_taskbar_limit = false;
 
-	if (index == taskbar_index + 0u)
+	if (index == taskbar_index)
 	{
 		m_gauge_max = limit;
 		set_taskbar_limit = true;
@@ -324,7 +315,7 @@ void msg_dialog_frame::UpdateProgress(int progress, bool disable)
 	else
 		properties.insert(QStringLiteral("progress-visible"), true);
 	// Progress takes a value from 0.0 to 0.1
-	properties.insert(QStringLiteral("progress"), 1.* progress / m_gauge_max);
+	properties.insert(QStringLiteral("progress"), (double)progress/(double)m_gauge_max);
 	message << QStringLiteral("application://rpcs3.desktop") << properties;
 	QDBusConnection::sessionBus().send(message);
 }

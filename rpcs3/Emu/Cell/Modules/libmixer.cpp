@@ -1,4 +1,6 @@
 ﻿#include "stdafx.h"
+#include "Emu/System.h"
+#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/Cell/lv2/sys_sync.h"
 
@@ -177,7 +179,7 @@ s32 cellSSPlayerCreate(vm::ptr<u32> handle, vm::ptr<CellSSPlayerConfig> config)
 {
 	libmixer.warning("cellSSPlayerCreate(handle=*0x%x, config=*0x%x)", handle, config);
 
-	if (config->outputMode != 0u || config->channels - 1u >= 2u)
+	if (config->outputMode != 0 || config->channels - 1 >= 2)
 	{
 		libmixer.error("cellSSPlayerCreate(config.outputMode=%d, config.channels=%d): invalid parameters", config->outputMode, config->channels);
 		return CELL_LIBMIXER_ERROR_INVALID_PARAMATER;
@@ -192,7 +194,7 @@ s32 cellSSPlayerCreate(vm::ptr<u32> handle, vm::ptr<CellSSPlayerConfig> config)
 	p.m_channels = config->channels;
 
 	g_ssp.push_back(p);
-	*handle = ::size32(g_ssp) - 1;
+	*handle = (u32)g_ssp.size() - 1;
 	return CELL_OK;
 }
 
@@ -232,7 +234,7 @@ s32 cellSSPlayerSetWave(u32 handle, vm::ptr<CellSSPlayerWaveParam> waveInfo, vm:
 	g_ssp[handle].m_addr = waveInfo->addr;
 	g_ssp[handle].m_samples = waveInfo->samples;
 	g_ssp[handle].m_loop_start = waveInfo->loopStartOffset - 1;
-	g_ssp[handle].m_loop_mode = commonInfo ? +commonInfo->loopMode : CELL_SSPLAYER_ONESHOT;
+	g_ssp[handle].m_loop_mode = commonInfo ? (u32)commonInfo->loopMode : CELL_SSPLAYER_ONESHOT;
 	g_ssp[handle].m_position = waveInfo->startOffset - 1;
 
 	return CELL_OK;
@@ -349,7 +351,7 @@ struct surmixer_thread : ppu_thread
 				memset(g_surmx.mixdata, 0, sizeof(g_surmx.mixdata));
 				if (g_surmx.cb)
 				{
-					g_surmx.cb(*this, g_surmx.cb_arg, static_cast<u32>(g_surmx.mixcount), 256);
+					g_surmx.cb(*this, g_surmx.cb_arg, (u32)g_surmx.mixcount, 256);
 					lv2_obj::sleep(*this);
 				}
 
@@ -377,7 +379,7 @@ struct surmixer_thread : ppu_thread
 							{
 								pos_inc = -1;
 							}
-							s32 shift = i - static_cast<s32>(fpos); // change playback speed (simple and rough)
+							s32 shift = i - (int)fpos; // change playback speed (simple and rough)
 							if (shift > 0)
 							{
 								// slow playback
@@ -395,15 +397,15 @@ struct surmixer_thread : ppu_thread
 							{
 								fpos += speed;
 							}
-							p.m_position += pos_inc;
+							p.m_position += (u32)pos_inc;
 							if (p.m_channels == 1) // get mono data
 							{
-								left = right = v[pos] / 32768.f * p.m_level;
+								left = right = (float)v[pos] / 0x8000 * p.m_level;
 							}
 							else if (p.m_channels == 2) // get stereo data
 							{
-								left = v[pos * 2 + 0] / 32768.f * p.m_level;
-								right = v[pos * 2 + 1] / 32768.f * p.m_level;
+								left = (float)v[pos * 2 + 0] / 0x8000 * p.m_level;
+								right = (float)v[pos * 2 + 1] / 0x8000 * p.m_level;
 							}
 							if (p.m_connected) // mix
 							{
@@ -412,7 +414,7 @@ struct surmixer_thread : ppu_thread
 								g_surmx.mixdata[i * 8 + 1] += right;
 							}
 							if ((p.m_position == p.m_samples && p.m_speed > 0.0f) ||
-								(p.m_position = umax && p.m_speed < 0.0f)) // loop or stop
+								(p.m_position == ~0 && p.m_speed < 0.0f)) // loop or stop
 							{
 								if (p.m_loop_mode == CELL_SSPLAYER_LOOP_ON)
 								{
@@ -420,7 +422,7 @@ struct surmixer_thread : ppu_thread
 								}
 								else if (p.m_loop_mode == CELL_SSPLAYER_ONESHOT_CONT)
 								{
-									p.m_position -= pos_inc; // restore position
+									p.m_position -= (u32)pos_inc; // restore position
 								}
 								else // oneshot
 								{

@@ -1,29 +1,29 @@
 ﻿#include "gui_settings.h"
 
+#include "game_list_frame.h"
 #include "qt_utils.h"
-#include "localized.h"
 
-#include "Emu/System.h"
-
-#include <QCheckBox>
 #include <QCoreApplication>
 #include <QMessageBox>
 
-LOG_CHANNEL(cfg_log, "CFG");
-
 inline std::string sstr(const QString& _in) { return _in.toStdString(); }
 
-gui_settings::gui_settings(QObject* parent) : settings(parent)
+gui_settings::gui_settings(QObject* parent) : QObject(parent)
+	, m_current_name(gui::Settings)
+	, m_settings(ComputeSettingsDir() + gui::Settings + ".ini", QSettings::Format::IniFormat, parent)
+	, m_settingsDir(ComputeSettingsDir())
 {
-	m_current_name = gui::Settings;
-	m_settings.reset(new QSettings(ComputeSettingsDir() + gui::Settings + ".ini", QSettings::Format::IniFormat, parent));
-
 	const QString settings_name = GetValue(gui::m_currentConfig).toString();
 
 	if (settings_name != m_current_name)
 	{
 		ChangeToConfig(settings_name);
 	}
+}
+
+gui_settings::~gui_settings()
+{
+	m_settings.sync();
 }
 
 QString gui_settings::GetCurrentUser()
@@ -39,67 +39,137 @@ QString gui_settings::GetCurrentUser()
 		return user;
 	}
 
-	cfg_log.fatal("Could not parse user setting: '%s' = '%d'.", user.toStdString(), user_id);
+	LOG_FATAL(GENERAL, "Could not parse user setting: '%s' = '%d'.", user.toStdString(), user_id);
 	return QString();
 }
 
-bool gui_settings::ChangeToConfig(const QString& config_name)
+QString gui_settings::GetSettingsDir()
 {
-	if (m_current_name == config_name)
+	return m_settingsDir.absolutePath();
+}
+
+QString gui_settings::ComputeSettingsDir()
+{
+	return QString::fromStdString(fs::get_config_dir()) + "/GuiConfigs/";
+}
+
+bool gui_settings::ChangeToConfig(const QString& friendly_name)
+{
+	if (m_current_name == friendly_name)
 	{
 		return false;
 	}
 
-	// Backup current config
-	SaveCurrentConfig(m_current_name);
+	if (friendly_name != gui::Settings)
+	{
+		if (m_current_name == gui::Settings)
+		{
+			SetValue(gui::m_currentConfig, friendly_name);
+		}
+		else
+		{
+			QSettings tmp(m_settingsDir.absoluteFilePath(gui::Settings + ".ini"), QSettings::Format::IniFormat, parent());
+			tmp.beginGroup(gui::m_currentConfig.key);
+			tmp.setValue(gui::m_currentConfig.name, friendly_name);
+			tmp.endGroup();
+		}
+	}
 
-	// Save new config name to the default config
-	SaveConfigNameToDefault(config_name);
+	m_settings.sync();
 
-	// Sync file just in case
-	m_settings->sync();
+	Reset(true);
 
-	// Load new config
-	m_settings.reset(new QSettings(m_settings_dir.absoluteFilePath(config_name + ".ini"), QSettings::IniFormat));
+	QSettings other(m_settingsDir.absoluteFilePath(friendly_name + ".ini"), QSettings::IniFormat);
 
-	// Save own name to new config
-	SetValue(gui::m_currentConfig, config_name);
-	m_settings->sync();
+	for (const QString& key : other.allKeys())
+	{
+		m_settings.setValue(key, other.value(key));
+	}
 
-	m_current_name = config_name;
+	SetValue(gui::m_currentConfig, friendly_name);
+
+	m_settings.sync();
+
+	m_current_name = friendly_name;
 
 	return true;
 }
 
-void gui_settings::Reset(bool remove_meta)
+void gui_settings::Reset(bool removeMeta)
 {
-	if (remove_meta)
+	if (removeMeta)
 	{
-		m_settings->clear();
+		m_settings.clear();
 	}
 	else
 	{
-		m_settings->remove(gui::logger);
-		m_settings->remove(gui::main_window);
-		m_settings->remove(gui::game_list);
+		m_settings.remove(gui::logger);
+		m_settings.remove(gui::main_window);
+		m_settings.remove(gui::game_list);
 	}
+}
+
+void gui_settings::RemoveValue(const QString& key, const QString& name)
+{
+	m_settings.beginGroup(key);
+	m_settings.remove(name);
+	m_settings.endGroup();
+}
+
+QVariant gui_settings::GetValue(const gui_save& entry)
+{
+	return m_settings.value(entry.key + "/" + entry.name, entry.def);
+}
+
+QVariant gui_settings::GetValue(const QString& key, const QString& name, const QString& def)
+{
+	return m_settings.value(key + "/" + name, def);
+}
+
+QVariant gui_settings::List2Var(const q_pair_list& list)
+{
+	QByteArray ba;
+	QDataStream stream(&ba, QIODevice::WriteOnly);
+	stream << list;
+	return QVariant(ba);
+}
+
+q_pair_list gui_settings::Var2List(const QVariant& var)
+{
+	q_pair_list list;
+	QByteArray ba = var.toByteArray();
+	QDataStream stream(&ba, QIODevice::ReadOnly);
+	stream >> list;
+	return list;
+}
+
+void gui_settings::SetValue(const gui_save& entry, const QVariant& value)
+{
+	m_settings.beginGroup(entry.key);
+	m_settings.setValue(entry.name, value);
+	m_settings.endGroup();
+}
+
+void gui_settings::SetValue(const QString& key, const QString& name, const QVariant& value)
+{
+	m_settings.beginGroup(key);
+	m_settings.setValue(name, value);
+	m_settings.endGroup();
 }
 
 QStringList gui_settings::GetGameListCategoryFilters()
 {
 	QStringList filterList;
-
-	if (GetCategoryVisibility(Category::HDD_Game)) filterList.append(category::cat_hdd_game);
-	if (GetCategoryVisibility(Category::Disc_Game)) filterList.append(category::cat_disc_game);
-	if (GetCategoryVisibility(Category::PS1_Game)) filterList.append(category::cat_ps1_game);
+	if (GetCategoryVisibility(Category::HDD_Game)) filterList.append(category::hdd_game);
+	if (GetCategoryVisibility(Category::Disc_Game)) filterList.append(category::disc_game);
+	if (GetCategoryVisibility(Category::PS1_Game)) filterList.append(category::ps1_game);
 	if (GetCategoryVisibility(Category::PS2_Game)) filterList.append(category::ps2_games);
 	if (GetCategoryVisibility(Category::PSP_Game)) filterList.append(category::psp_games);
-	if (GetCategoryVisibility(Category::Home)) filterList.append(category::cat_home);
+	if (GetCategoryVisibility(Category::Home)) filterList.append(category::home);
 	if (GetCategoryVisibility(Category::Media)) filterList.append(category::media);
 	if (GetCategoryVisibility(Category::Data)) filterList.append(category::data);
-	if (GetCategoryVisibility(Category::Unknown_Cat)) filterList.append(category::cat_unknown);
+	if (GetCategoryVisibility(Category::Unknown_Cat)) filterList.append(category::unknown);
 	if (GetCategoryVisibility(Category::Others)) filterList.append(category::others);
-
 	return filterList;
 }
 
@@ -130,7 +200,7 @@ bool gui_settings::GetCategoryVisibility(int cat)
 	case Category::Others:
 		value = gui::cat_other; break;
 	default:
-		cfg_log.warning("GetCategoryVisibility: wrong cat <%d>", cat);
+		LOG_WARNING(GENERAL, "GetCategoryVisibility: wrong cat <%d>", cat);
 		break;
 	}
 
@@ -164,7 +234,7 @@ void gui_settings::SetCategoryVisibility(int cat, const bool& val)
 	case Category::Others:
 		value = gui::cat_other; break;
 	default:
-		cfg_log.warning("SetCategoryVisibility: wrong cat <%d>", cat);
+		LOG_WARNING(GENERAL, "SetCategoryVisibility: wrong cat <%d>", cat);
 		break;
 	}
 
@@ -174,39 +244,36 @@ void gui_settings::SetCategoryVisibility(int cat, const bool& val)
 void gui_settings::ShowBox(bool confirm, const QString& title, const QString& text, const gui_save& entry, int* result = nullptr, QWidget* parent = nullptr, bool always_on_top = false)
 {
 	const std::string dialog_type = confirm ? "Confirmation" : "Info";
-	const bool has_gui_setting = !entry.name.isEmpty();
 
-	if (has_gui_setting && !GetValue(entry).toBool())
+	if (entry.name.isEmpty() || GetValue(entry).toBool())
 	{
-		cfg_log.notice("%s Dialog for Entry %s was ignored", dialog_type, sstr(entry.name));
-		return;
-	}
+		const QFlags<QMessageBox::StandardButton> buttons = confirm ? QMessageBox::Yes | QMessageBox::No : QMessageBox::Ok;
+		const QMessageBox::Icon icon = confirm ? QMessageBox::Question : QMessageBox::Information;
 
-	const QFlags<QMessageBox::StandardButton> buttons = confirm ? QMessageBox::Yes | QMessageBox::No : QMessageBox::Ok;
-	const QMessageBox::Icon icon = confirm ? QMessageBox::Question : QMessageBox::Information;
+		QMessageBox* mb = new QMessageBox(icon, title, text, buttons, parent, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | (always_on_top ? Qt::WindowStaysOnTopHint : Qt::Widget));
+		mb->deleteLater();
 
-	QMessageBox* mb = new QMessageBox(icon, title, text, buttons, parent, Qt::Dialog | Qt::MSWindowsFixedSizeDialogHint | (always_on_top ? Qt::WindowStaysOnTopHint : Qt::Widget));
-	mb->deleteLater();
-
-	if (has_gui_setting)
-	{
-		mb->setCheckBox(new QCheckBox(tr("Don't show again")));
-	}
-
-	connect(mb, &QMessageBox::finished, [&](int res)
-	{
-		if (result)
+		if (!entry.name.isEmpty())
 		{
-			*result = res;
+			mb->setCheckBox(new QCheckBox(tr("Don't show again")));
 		}
-		if (has_gui_setting && mb->checkBox()->isChecked())
-		{
-			SetValue(entry, false);
-			cfg_log.notice("%s Dialog for Entry %s is now disabled", dialog_type, sstr(entry.name));
-		}
-	});
 
-	mb->exec();
+		connect(mb, &QMessageBox::finished, [&](int res)
+		{
+			if (result)
+			{
+				*result = res;
+			}
+			if (!entry.name.isEmpty() && mb->checkBox()->isChecked())
+			{
+				SetValue(entry, false);
+				LOG_NOTICE(GENERAL, "%s Dialog for Entry %s is now disabled", dialog_type, sstr(entry.name));
+			}
+		});
+
+		mb->exec();
+	}
+	else LOG_NOTICE(GENERAL, "%s Dialog for Entry %s was ignored", dialog_type, sstr(entry.name));
 }
 
 void gui_settings::ShowConfirmationBox(const QString& title, const QString& text, const gui_save& entry, int* result = nullptr, QWidget* parent = nullptr)
@@ -219,36 +286,6 @@ void gui_settings::ShowInfoBox(const QString& title, const QString& text, const 
 	ShowBox(false, title, text, entry, nullptr, parent, false);
 }
 
-bool gui_settings::GetBootConfirmation(QWidget* parent, const gui_save& gui_save_entry)
-{
-	if (!Emu.IsStopped())
-	{
-		QString title = tr("Close Running Game?");
-		QString message = tr("Performing this action will close the current game.\nDo you really want to continue?\n\nAny unsaved progress will be lost!\n");
-
-		if (gui_save_entry == gui::ib_confirm_boot)
-		{
-			message = tr("Booting another game will close the current game.\nDo you really want to boot another game?\n\nAny unsaved progress will be lost!\n");
-		}
-		else if (gui_save_entry == gui::ib_confirm_exit)
-		{
-			title = tr("Exit RPCS3?");
-			message = tr("A game is currently running. Do you really want to close RPCS3?\n\nAny unsaved progress will be lost!\n");
-		}
-
-		int result = QMessageBox::Yes;
-
-		ShowConfirmationBox(title, message, gui_save_entry, &result, parent);
-
-		if (result != QMessageBox::Yes)
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
 void gui_settings::SetGamelistColVisibility(int col, bool val)
 {
 	SetValue(GetGuiSaveForColumn(col), val);
@@ -259,16 +296,31 @@ void gui_settings::SetCustomColor(int col, const QColor& val)
 	SetValue(gui_save(gui::meta, "CustomColor" + QString::number(col), gui::gl_icon_color), val);
 }
 
-void gui_settings::SaveCurrentConfig(const QString& config_name)
+void gui_settings::SaveCurrentConfig(const QString& friendly_name)
 {
-	SaveConfigNameToDefault(config_name);
-	BackupSettingsToTarget(config_name);
-	ChangeToConfig(config_name);
+	if (friendly_name != gui::Settings)
+	{
+		if (m_current_name == gui::Settings)
+		{
+			SetValue(gui::m_currentConfig, friendly_name);
+			m_settings.sync();
+		}
+		else
+		{
+			QSettings tmp(m_settingsDir.absoluteFilePath(gui::Settings + ".ini"), QSettings::Format::IniFormat, parent());
+			tmp.beginGroup(gui::m_currentConfig.key);
+			tmp.setValue(gui::m_currentConfig.name, friendly_name);
+			tmp.endGroup();
+		}
+	}
+
+	BackupSettingsToTarget(friendly_name);
+	ChangeToConfig(friendly_name);
 }
 
 logs::level gui_settings::GetLogLevel()
 {
-	return logs::level{GetValue(gui::l_level).toUInt()};
+	return (logs::level) GetValue(gui::l_level).toUInt();
 }
 
 bool gui_settings::GetGamelistColVisibility(int col)
@@ -283,11 +335,10 @@ QColor gui_settings::GetCustomColor(int col)
 
 QStringList gui_settings::GetConfigEntries()
 {
-	const QStringList name_filter = QStringList("*.ini");
-	const QFileInfoList entries = m_settings_dir.entryInfoList(name_filter, QDir::Files);
-
+	QStringList nameFilter;
+	nameFilter << "*.ini";
+	QFileInfoList entries = m_settingsDir.entryInfoList(nameFilter, QDir::Files);
 	QStringList res;
-
 	for (const QFileInfo &entry : entries)
 	{
 		res.append(entry.baseName());
@@ -296,32 +347,15 @@ QStringList gui_settings::GetConfigEntries()
 	return res;
 }
 
-// Save the name of the used config to the default settings file
-void gui_settings::SaveConfigNameToDefault(const QString& config_name)
-{
-	if (m_current_name == gui::Settings)
-	{
-		SetValue(gui::m_currentConfig, config_name);
-		m_settings->sync();
-	}
-	else
-	{
-		QSettings tmp(m_settings_dir.absoluteFilePath(gui::Settings + ".ini"), QSettings::Format::IniFormat, parent());
-		tmp.beginGroup(gui::m_currentConfig.key);
-		tmp.setValue(gui::m_currentConfig.name, config_name);
-		tmp.endGroup();
-	}
-}
+void gui_settings::BackupSettingsToTarget(const QString& friendly_name)
+{	
+	QSettings target(ComputeSettingsDir() + friendly_name + ".ini", QSettings::Format::IniFormat);
 
-void gui_settings::BackupSettingsToTarget(const QString& config_name)
-{
-	QSettings target(ComputeSettingsDir() + config_name + ".ini", QSettings::Format::IniFormat);
-
-	for (const QString& key : m_settings->allKeys())
+	for (const QString& key : m_settings.allKeys())
 	{
 		if (!key.startsWith(gui::meta))
 		{
-			target.setValue(key, m_settings->value(key));
+			target.setValue(key, m_settings.value(key));
 		}
 	}
 
@@ -330,8 +364,8 @@ void gui_settings::BackupSettingsToTarget(const QString& config_name)
 
 QStringList gui_settings::GetStylesheetEntries()
 {
-	const QStringList name_filter = QStringList("*.qss");
-	QStringList res = gui::utils::get_dir_entries(m_settings_dir, name_filter);
+	QStringList nameFilter = QStringList("*.qss");
+	QStringList res = gui::utils::get_dir_entries(m_settingsDir, nameFilter);
 #if !defined(_WIN32)
 	// Makes stylesheets load if using AppImage (App Bundle) or installed to /usr/bin
 #ifdef __APPLE__
@@ -339,7 +373,7 @@ QStringList gui_settings::GetStylesheetEntries()
 #else
 	QDir platformStylesheetDir = QCoreApplication::applicationDirPath() + "/../share/rpcs3/GuiConfigs/";
 #endif
-	res.append(gui::utils::get_dir_entries(platformStylesheetDir, name_filter));
+	res.append(gui::utils::get_dir_entries(platformStylesheetDir, nameFilter));
 	res.removeDuplicates();
 #endif
 	res.sort(Qt::CaseInsensitive);
@@ -348,9 +382,7 @@ QStringList gui_settings::GetStylesheetEntries()
 
 QString gui_settings::GetCurrentStylesheetPath()
 {
-	const Localized localized;
-
-	const QString stylesheet = GetValue(gui::m_currentStylesheet).toString();
+	QString stylesheet = GetValue(gui::m_currentStylesheet).toString();
 
 	if (stylesheet == gui::Default)
 	{
@@ -361,17 +393,17 @@ QString gui_settings::GetCurrentStylesheetPath()
 		return "-";
 	}
 
-	return m_settings_dir.absoluteFilePath(stylesheet + ".qss");
+	return m_settingsDir.absoluteFilePath(stylesheet + ".qss");
 }
 
 QSize gui_settings::SizeFromSlider(int pos)
 {
-	return gui::gl_icon_size_min + (gui::gl_icon_size_max - gui::gl_icon_size_min) * (1.f * pos / gui::gl_max_slider_pos);
+	return gui::gl_icon_size_min + (gui::gl_icon_size_max - gui::gl_icon_size_min) * (pos / (float)gui::gl_max_slider_pos);
 }
 
 gui_save gui_settings::GetGuiSaveForColumn(int col)
 {
 	// hide sound format, parental level, firmware version and path by default
-	const bool show = col != gui::column_sound && col != gui::column_parental && col != gui::column_firmware && col != gui::column_path;
-	return gui_save{ gui::game_list, "visibility_" + gui::get_game_list_column_name(static_cast<gui::game_list_columns>(col)), show };
+	bool show = col != gui::column_sound && col != gui::column_parental && col != gui::column_firmware && col != gui::column_path;
+	return gui_save{ gui::game_list, "visibility_" + gui::get_game_list_column_name((gui::game_list_columns)col), show };
 }

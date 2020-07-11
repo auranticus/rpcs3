@@ -7,8 +7,6 @@
 #include "Emu/Memory/vm_var.h"
 #include "Utilities/VirtualMemory.h"
 #include "sys_memory.h"
-#include "sys_sync.h"
-#include "sys_process.h"
 
 LOG_CHANNEL(sys_mmapper);
 
@@ -17,33 +15,13 @@ lv2_memory::lv2_memory(u32 size, u32 align, u64 flags, lv2_memory_container* ct)
 	, align(align)
 	, flags(flags)
 	, ct(ct)
-	, shm(std::make_shared<utils::shm>(size, 1 /* shareable flag */))
+	, shm(std::make_shared<utils::shm>(size))
 {
-}
-
-template<> DECLARE(ipc_manager<lv2_memory, u64>::g_ipc) {};
-
-template <bool exclusive = false>
-error_code create_lv2_shm(bool pshared, u64 ipc_key, u32 size, u32 align, u64 flags, lv2_memory_container* ct)
-{
-	if (auto error = lv2_obj::create<lv2_memory>(pshared ? SYS_SYNC_PROCESS_SHARED : SYS_SYNC_NOT_PROCESS_SHARED, ipc_key, exclusive ? SYS_SYNC_NEWLY_CREATED : SYS_SYNC_NOT_CARE, [&]()
-	{
-		return std::make_shared<lv2_memory>(
-			size,
-			align,
-			flags,
-			ct);
-	}, false))
-	{
-		return error;
-	}
-
-	return CELL_OK;
 }
 
 error_code sys_mmapper_allocate_address(ppu_thread& ppu, u64 size, u64 flags, u64 alignment, vm::ptr<u32> alloc_addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.error("sys_mmapper_allocate_address(size=0x%llx, flags=0x%llx, alignment=0x%llx, alloc_addr=*0x%x)", size, flags, alignment, alloc_addr);
 
@@ -86,7 +64,7 @@ error_code sys_mmapper_allocate_address(ppu_thread& ppu, u64 size, u64 flags, u6
 
 error_code sys_mmapper_allocate_fixed_address(ppu_thread& ppu)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.error("sys_mmapper_allocate_fixed_address()");
 
@@ -98,16 +76,11 @@ error_code sys_mmapper_allocate_fixed_address(ppu_thread& ppu)
 	return CELL_OK;
 }
 
-error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u32 size, u64 flags, vm::ptr<u32> mem_id)
+error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 unk, u32 size, u64 flags, vm::ptr<u32> mem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
-	sys_mmapper.warning("sys_mmapper_allocate_shared_memory(ipc_key=0x%llx, size=0x%x, flags=0x%llx, mem_id=*0x%x)", ipc_key, size, flags, mem_id);
-
-	if (size == 0)
-	{
-		return CELL_EALIGN;
-	}
+	sys_mmapper.warning("sys_mmapper_allocate_shared_memory(0x%llx, size=0x%x, flags=0x%llx, mem_id=*0x%x)", unk, size, flags, mem_id);
 
 	// Check page granularity
 	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
@@ -122,6 +95,7 @@ error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u32 
 
 		break;
 	}
+
 	case SYS_MEMORY_PAGE_SIZE_64K:
 	{
 		if (size % 0x10000)
@@ -131,6 +105,7 @@ error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u32 
 
 		break;
 	}
+
 	default:
 	{
 		return CELL_EINVAL;
@@ -145,26 +120,17 @@ error_code sys_mmapper_allocate_shared_memory(ppu_thread& ppu, u64 ipc_key, u32 
 		return CELL_ENOMEM;
 	}
 
-	if (auto error = create_lv2_shm(ipc_key != SYS_MMAPPER_NO_SHM_KEY, ipc_key, size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, dct))
-	{
-		dct->used -= size;
-		return error;
-	}
+	// Generate a new mem ID
+	*mem_id = idm::make<lv2_obj, lv2_memory>(size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, dct);
 
-	*mem_id = idm::last_id();
 	return CELL_OK;
 }
 
-error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u64 ipc_key, u32 size, u32 cid, u64 flags, vm::ptr<u32> mem_id)
+error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u64 unk, u32 size, u32 cid, u64 flags, vm::ptr<u32> mem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
-	sys_mmapper.warning("sys_mmapper_allocate_shared_memory_from_container(ipc_key=0x%llx, size=0x%x, cid=0x%x, flags=0x%llx, mem_id=*0x%x)", ipc_key, size, cid, flags, mem_id);
-
-	if (size == 0)
-	{
-		return CELL_EALIGN;
-	}
+	sys_mmapper.error("sys_mmapper_allocate_shared_memory_from_container(0x%llx, size=0x%x, cid=0x%x, flags=0x%llx, mem_id=*0x%x)", unk, size, cid, flags, mem_id);
 
 	// Check page granularity.
 	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
@@ -179,6 +145,7 @@ error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u6
 
 		break;
 	}
+
 	case SYS_MEMORY_PAGE_SIZE_64K:
 	{
 		if (size % 0x10000)
@@ -188,6 +155,7 @@ error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u6
 
 		break;
 	}
+
 	default:
 	{
 		return CELL_EINVAL;
@@ -215,235 +183,15 @@ error_code sys_mmapper_allocate_shared_memory_from_container(ppu_thread& ppu, u6
 		return ct.ret;
 	}
 
-	if (auto error = create_lv2_shm(ipc_key != SYS_MMAPPER_NO_SHM_KEY, ipc_key, size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, ct.ptr.get()))
-	{
-		ct->used -= size;
-		return error;
-	}
+	// Generate a new mem ID
+	*mem_id = idm::make<lv2_obj, lv2_memory>(size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, ct.ptr.get());
 
-	*mem_id = idm::last_id();
-	return CELL_OK;
-}
-
-error_code sys_mmapper_allocate_shared_memory_ext(ppu_thread& ppu, u64 ipc_key, u32 size, u32 flags, vm::ptr<mmapper_unk_entry_struct0> entries, s32 entry_count, vm::ptr<u32> mem_id)
-{
-	ppu.state += cpu_flag::wait;
-
-	sys_mmapper.todo("sys_mmapper_allocate_shared_memory_ext(ipc_key=0x%x, size=0x%x, flags=0x%x, entries=*0x%x, entry_count=0x%x, mem_id=*0x%x)", ipc_key, size, flags, entries, entry_count, mem_id);
-
-	if (size == 0)
-	{
-		return CELL_EALIGN;
-	}
-
-	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
-	{
-	case SYS_MEMORY_PAGE_SIZE_1M:
-	case 0:
-	{
-		if (size % 0x100000)
-		{
-			return CELL_EALIGN;
-		}
-
-		break;
-	}
-	case SYS_MEMORY_PAGE_SIZE_64K:
-	{
-		if (size % 0x10000)
-		{
-			return CELL_EALIGN;
-		}
-
-		break;
-	}
-	default:
-	{
-		return CELL_EINVAL;
-	}
-	}
-
-	if (flags & ~SYS_MEMORY_PAGE_SIZE_MASK)
-	{
-		return CELL_EINVAL;
-	}
-
-	if (entry_count <= 0 || entry_count > 0x10)
-	{
-		return CELL_EINVAL;
-	}
-
-	if constexpr (bool to_perm_check = false; true)
-	{
-		for (s32 i = 0; i < entry_count; i++)
-		{
-			const u64 type = entries[i].type;
-
-			// The whole structure contents are unknown
-			sys_mmapper.todo("sys_mmapper_allocate_shared_memory_ext(): entry type = 0x%llx", type);
-
-			switch (type)
-			{
-			case 0:
-			case 1:
-			case 3:
-			{
-				break;
-			}
-			case 5:
-			{
-				to_perm_check = true;
-				break;
-			}
-			default:
-			{
-				return CELL_EPERM;
-			}
-			}
-		}
-
-		if (to_perm_check)
-		{
-			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !g_ps3_process_info.debug_or_root())
-			{
-				return CELL_EPERM;
-			}
-		}
-	}
-
-	// Get "default" memory container
-	const auto dct = g_fxo->get<lv2_memory_container>();
-
-	if (!dct->take(size))
-	{
-		return CELL_ENOMEM;
-	}
-
-	if (auto error = create_lv2_shm<true>(true, ipc_key, size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, dct))
-	{
-		dct->used -= size;
-		return error;
-	}
-
-	*mem_id = idm::last_id();
-	return CELL_OK;
-}
-
-error_code sys_mmapper_allocate_shared_memory_from_container_ext(ppu_thread& ppu, u64 ipc_key, u32 size, u64 flags, u32 cid, vm::ptr<mmapper_unk_entry_struct0> entries, s32 entry_count, vm::ptr<u32> mem_id)
-{
-	ppu.state += cpu_flag::wait;
-
-	sys_mmapper.todo("sys_mmapper_allocate_shared_memory_from_container_ext(ipc_key=0x%x, size=0x%x, flags=0x%x, cid=0x%x, entries=*0x%x, entry_count=0x%x, mem_id=*0x%x)", ipc_key, size, flags, cid, entries,
-		entry_count, mem_id);
-
-	switch (flags & SYS_MEMORY_PAGE_SIZE_MASK)
-	{
-	case SYS_MEMORY_PAGE_SIZE_1M:
-	case 0:
-	{
-		if (size % 0x100000)
-		{
-			return CELL_EALIGN;
-		}
-
-		break;
-	}
-	case SYS_MEMORY_PAGE_SIZE_64K:
-	{
-		if (size % 0x10000)
-		{
-			return CELL_EALIGN;
-		}
-
-		break;
-	}
-	default:
-	{
-		return CELL_EINVAL;
-	}
-	}
-
-	if (flags & ~SYS_MEMORY_PAGE_SIZE_MASK)
-	{
-		return CELL_EINVAL;
-	}
-
-	if (entry_count <= 0 || entry_count > 0x10)
-	{
-		return CELL_EINVAL;
-	}
-
-	if constexpr (bool to_perm_check = false; true)
-	{
-		for (s32 i = 0; i < entry_count; i++)
-		{
-			const u64 type = entries[i].type;
-
-			sys_mmapper.todo("sys_mmapper_allocate_shared_memory_from_container_ext(): entry type = 0x%llx", type);
-
-			switch (type)
-			{
-			case 0:
-			case 1:
-			case 3:
-			{
-				break;
-			}
-			case 5:
-			{
-				to_perm_check = true;
-				break;
-			}
-			default:
-			{
-				return CELL_EPERM;
-			}
-			}
-		}
-
-		if (to_perm_check)
-		{
-			if (flags != SYS_MEMORY_PAGE_SIZE_64K || !g_ps3_process_info.debug_or_root())
-			{
-				return CELL_EPERM;
-			}
-		}
-	}
-
-	const auto ct = idm::get<lv2_memory_container>(cid, [&](lv2_memory_container& ct) -> CellError
-	{
-		// Try to get "physical memory"
-		if (!ct.take(size))
-		{
-			return CELL_ENOMEM;
-		}
-
-		return {};
-	});
-
-	if (!ct)
-	{
-		return CELL_ESRCH;
-	}
-
-	if (ct.ret)
-	{
-		return ct.ret;
-	}
-
-	if (auto error = create_lv2_shm<true>(true, ipc_key, size, flags & SYS_MEMORY_PAGE_SIZE_64K ? 0x10000 : 0x100000, flags, ct.ptr.get()))
-	{
-		ct->used -= size;
-		return error;
-	}
-
-	*mem_id = idm::last_id();
 	return CELL_OK;
 }
 
 error_code sys_mmapper_change_address_access_right(ppu_thread& ppu, u32 addr, u64 flags)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.todo("sys_mmapper_change_address_access_right(addr=0x%x, flags=0x%llx)", addr, flags);
 
@@ -452,7 +200,7 @@ error_code sys_mmapper_change_address_access_right(ppu_thread& ppu, u32 addr, u6
 
 error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.error("sys_mmapper_free_address(addr=0x%x)", addr);
 
@@ -509,7 +257,7 @@ error_code sys_mmapper_free_address(ppu_thread& ppu, u32 addr)
 
 error_code sys_mmapper_free_shared_memory(ppu_thread& ppu, u32 mem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.warning("sys_mmapper_free_shared_memory(mem_id=0x%x)", mem_id);
 
@@ -542,7 +290,7 @@ error_code sys_mmapper_free_shared_memory(ppu_thread& ppu, u32 mem_id)
 
 error_code sys_mmapper_map_shared_memory(ppu_thread& ppu, u32 addr, u32 mem_id, u64 flags)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.warning("sys_mmapper_map_shared_memory(addr=0x%x, mem_id=0x%x, flags=0x%llx)", addr, mem_id, flags);
 
@@ -592,7 +340,7 @@ error_code sys_mmapper_map_shared_memory(ppu_thread& ppu, u32 addr, u32 mem_id, 
 
 error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_id, u64 flags, vm::ptr<u32> alloc_addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.warning("sys_mmapper_search_and_map(start_addr=0x%x, mem_id=0x%x, flags=0x%llx, alloc_addr=*0x%x)", start_addr, mem_id, flags, alloc_addr);
 
@@ -640,7 +388,7 @@ error_code sys_mmapper_search_and_map(ppu_thread& ppu, u32 start_addr, u32 mem_i
 
 error_code sys_mmapper_unmap_shared_memory(ppu_thread& ppu, u32 addr, vm::ptr<u32> mem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.warning("sys_mmapper_unmap_shared_memory(addr=0x%x, mem_id=*0x%x)", addr, mem_id);
 
@@ -689,7 +437,7 @@ error_code sys_mmapper_unmap_shared_memory(ppu_thread& ppu, u32 addr, vm::ptr<u3
 
 error_code sys_mmapper_enable_page_fault_notification(ppu_thread& ppu, u32 start_addr, u32 event_queue_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_mmapper.warning("sys_mmapper_enable_page_fault_notification(start_addr=0x%x, event_queue_id=0x%x)", start_addr, event_queue_id);
 
@@ -712,9 +460,8 @@ error_code sys_mmapper_enable_page_fault_notification(ppu_thread& ppu, u32 start
 	error_code res = sys_event_port_create(port_id, SYS_EVENT_PORT_LOCAL, SYS_MEMORY_PAGE_FAULT_EVENT_KEY);
 	sys_event_port_connect_local(*port_id, event_queue_id);
 
-	if (res + 0u == CELL_EAGAIN)
-	{
-		// Not enough system resources.
+	if (res == CELL_EAGAIN)
+	{ // Not enough system resources.
 		return CELL_EAGAIN;
 	}
 
@@ -739,13 +486,13 @@ error_code sys_mmapper_enable_page_fault_notification(ppu_thread& ppu, u32 start
 	return CELL_OK;
 }
 
-error_code mmapper_thread_recover_page_fault(cpu_thread* cpu)
+error_code mmapper_thread_recover_page_fault(u32 id)
 {
 	// We can only wake a thread if it is being suspended for a page fault.
 	auto pf_events = g_fxo->get<page_fault_event_entries>();
 	{
 		std::lock_guard pf_lock(pf_events->pf_mutex);
-		const auto pf_event_ind = pf_events->events.find(cpu);
+		auto pf_event_ind = pf_events->events.find(id);
 
 		if (pf_event_ind == pf_events->events.end())
 		{
@@ -756,15 +503,6 @@ error_code mmapper_thread_recover_page_fault(cpu_thread* cpu)
 		pf_events->events.erase(pf_event_ind);
 	}
 
-	if (cpu->id_type() == 1u)
-	{
-		lv2_obj::awake(cpu);
-	}
-	else
-	{
-		cpu->state += cpu_flag::signal;
-		cpu->notify();
-	}
-
+	pf_events->cond.notify_all();
 	return CELL_OK;
 }

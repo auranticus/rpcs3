@@ -123,14 +123,14 @@ namespace rsx
 		return ((registers[NV4097_SET_TEXTURE_CONTROL0 + (m_index * 8)] >> 31) & 0x1);
 	}
 
-	f32 fragment_texture::min_lod() const
+	u16 fragment_texture::min_lod() const
 	{
-		return rsx::decode_fxp<4, 8, false>((registers[NV4097_SET_TEXTURE_CONTROL0 + (m_index * 8)] >> 19) & 0xfff);
+		return ((registers[NV4097_SET_TEXTURE_CONTROL0 + (m_index * 8)] >> 19) & 0xfff);
 	}
 
-	f32 fragment_texture::max_lod() const
+	u16 fragment_texture::max_lod() const
 	{
-		return rsx::decode_fxp<4, 8, false>((registers[NV4097_SET_TEXTURE_CONTROL0 + (m_index * 8)] >> 7) & 0xfff);
+		return ((registers[NV4097_SET_TEXTURE_CONTROL0 + (m_index * 8)] >> 7) & 0xfff);
 	}
 
 	rsx::texture_max_anisotropy fragment_texture::max_aniso() const
@@ -155,68 +155,32 @@ namespace rsx
 
 		switch (format() & ~(CELL_GCM_TEXTURE_LN | CELL_GCM_TEXTURE_UN))
 		{
-		case CELL_GCM_TEXTURE_X32_FLOAT:
-		case CELL_GCM_TEXTURE_W32_Z32_Y32_X32_FLOAT:
-		case CELL_GCM_TEXTURE_W16_Z16_Y16_X16_FLOAT:
-		{
-			// Floating point textures cannot be remapped on realhw, throws error 261
-			remap_ctl &= ~(0xFF);
-			remap_ctl |= 0xE4;
-			break;
-		}
-		case CELL_GCM_TEXTURE_Y16_X16_FLOAT:
-		{
-			// Floating point textures cannot be remapped on realhw, throws error 261
-			// High word of remap ctrl remaps ARGB to YXXX
-			const u32 lo_word = (remap_override) ? 0x56 : 0x66;
-			remap_ctl &= ~(0xFF);
-			remap_ctl |= lo_word;
-			break;
-		}
 		case CELL_GCM_TEXTURE_X16:
 		case CELL_GCM_TEXTURE_Y16_X16:
+		case CELL_GCM_TEXTURE_Y16_X16_FLOAT:
 		case CELL_GCM_TEXTURE_COMPRESSED_HILO8:
 		case CELL_GCM_TEXTURE_COMPRESSED_HILO_S8:
 		{
-			// These are special formats whose remap encoding is in 16-bit blocks
-			// The first channel is encoded as 0x4 (combination of 0 and 1) and the second channel is 0xE (combination of 2 and 3)
-			// There are only 2 valid combinations - 0xE4 or 0x4E, any attempts to mess with this will crash the system
-			// This means only R and G channels exist for these formats
-			// Note that for the X16 format, 0xE refers to the "second" channel of a Y16_X16 format. 0xE is actually the existing data in this case
-
-			// Low bit in remap override (high word) affects whether the G component should match R and B components
-			// Components are usually interleaved R-G-R-G unless flag is set, then its R-R-R-G (Virtua Fighter 5)
-			// NOTE: The remap vector can also read from B-A-B-A in some cases (Mass Effect 3)
-
-			u32 lo_word = remap_ctl & 0xFF;
-			remap_ctl &= 0xFF00;
-
-			switch (lo_word)
+			//Low bit in remap control affects whether the G component should match R and B components
+			//Components are usually interleaved R-G-R-G unless flag is set, then its R-R-R-G (Virtua Fighter 5)
+			//NOTE: The remap vector can also read from B-A-B-A in some cases (Mass Effect 3)
+			if (remap_override)
 			{
-			case 0xE4:
-				lo_word = (remap_override) ? 0x56 : 0x66;
-				break;
-			case 0x4E:
-				lo_word = (remap_override) ? 0xA9 : 0x99;
-				break;
-			case 0xEE:
-				lo_word = 0xAA;
-				break;
-			case 0x44:
-				lo_word = 0x55;
-				break;
+				auto r_component = (remap_ctl >> 2) & 3;
+				remap_ctl = (remap_ctl & ~(3 << 4)) | r_component << 4;
 			}
 
-			remap_ctl |= lo_word;
+			remap_ctl &= 0xFFFF;
 			break;
 		}
 		case CELL_GCM_TEXTURE_B8:
 		{
-			// Low bit in remap control seems to affect whether the A component is forced to 1
-			// Only seen in BLUS31604
+			//Low bit in remap control seems to affect whether the A component is forced to 1
+			//Only seen in BLUS31604
+			//TODO: Verify with a hardware test
 			if (remap_override)
 			{
-				// Set remap lookup for A component to FORCE_ONE
+				//Set remap lookup for A component to FORCE_ONE
 				remap_ctl = (remap_ctl & ~(3 << 8)) | (1 << 8);
 			}
 			break;
@@ -247,9 +211,9 @@ namespace rsx
 		return std::make_pair(remap_inputs, remap_lookup);
 	}
 
-	f32 fragment_texture::bias() const
+	float fragment_texture::bias() const
 	{
-		return rsx::decode_fxp<4, 8>((registers[NV4097_SET_TEXTURE_FILTER + (m_index * 8)]) & 0x1fff);
+		return float(f16((registers[NV4097_SET_TEXTURE_FILTER + (m_index * 8)]) & 0x1fff));
 	}
 
 	rsx::texture_minify_filter fragment_texture::min_filter() const
@@ -265,11 +229,6 @@ namespace rsx
 	u8 fragment_texture::convolution_filter() const
 	{
 		return ((registers[NV4097_SET_TEXTURE_FILTER + (m_index * 8)] >> 13) & 0xf);
-	}
-
-	u8 fragment_texture::argb_signed() const
-	{
-		return ((registers[NV4097_SET_TEXTURE_FILTER + (m_index * 8)] >> 28) & 0xf);
 	}
 
 	bool fragment_texture::a_signed() const
@@ -391,19 +350,19 @@ namespace rsx
 		return ((registers[NV4097_SET_VERTEX_TEXTURE_CONTROL0 + (m_index * 8)] >> 31) & 0x1);
 	}
 
-	f32 vertex_texture::min_lod() const
+	u16 vertex_texture::min_lod() const
 	{
-		return rsx::decode_fxp<4, 8, false>((registers[NV4097_SET_VERTEX_TEXTURE_CONTROL0 + (m_index * 8)] >> 19) & 0xfff);
+		return ((registers[NV4097_SET_VERTEX_TEXTURE_CONTROL0 + (m_index * 8)] >> 19) & 0xfff);
 	}
 
-	f32 vertex_texture::max_lod() const
+	u16 vertex_texture::max_lod() const
 	{
-		return rsx::decode_fxp<4, 8, false>((registers[NV4097_SET_VERTEX_TEXTURE_CONTROL0 + (m_index * 8)] >> 7) & 0xfff);
+		return ((registers[NV4097_SET_VERTEX_TEXTURE_CONTROL0 + (m_index * 8)] >> 7) & 0xfff);
 	}
 
-	f32 vertex_texture::bias() const
+	u16 vertex_texture::bias() const
 	{
-		return rsx::decode_fxp<4, 8>((registers[NV4097_SET_VERTEX_TEXTURE_FILTER + (m_index * 8)]) & 0x1fff);
+		return ((registers[NV4097_SET_VERTEX_TEXTURE_FILTER + (m_index * 8)]) & 0x1fff);
 	}
 
 	rsx::texture_minify_filter vertex_texture::min_filter() const

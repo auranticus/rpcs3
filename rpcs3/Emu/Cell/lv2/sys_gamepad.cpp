@@ -1,5 +1,9 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "sys_gamepad.h"
+
+#include "Emu/System.h"
+#include "Emu/IdManager.h"
+
 
 LOG_CHANNEL(sys_gamepad);
 

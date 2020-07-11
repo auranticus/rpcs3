@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "CgBinaryProgram.h"
 
 #include "Emu/System.h"
@@ -19,8 +19,6 @@ void CgBinaryDisasm::AddVecCodeDisasm(const std::string& code)
 std::string CgBinaryDisasm::GetMaskDisasm(bool is_sca)
 {
 	std::string ret;
-	ret.reserve(5);
-	ret += '.';
 
 	if (is_sca)
 	{
@@ -37,7 +35,7 @@ std::string CgBinaryDisasm::GetMaskDisasm(bool is_sca)
 		if (d3.vec_writemask_w) ret += "w";
 	}
 
-	return ret == "."sv || ret == ".xyzw"sv ? "" : (ret);
+	return ret.empty() || ret == "xyzw" ? "" : ("." + ret);
 }
 
 std::string CgBinaryDisasm::GetVecMaskDisasm()
@@ -63,7 +61,7 @@ std::string CgBinaryDisasm::GetDSTDisasm(bool is_sca)
 
 	default:
 		if (d3.dst > 15)
-			rsx_log.error("dst index out of range: %u", d3.dst);
+			LOG_ERROR(RSX, "dst index out of range: %u", d3.dst);
 
 		ret += fmt::format("o[%d]", d3.dst) + mask;
 		// Vertex Program supports double destinations, notably in MOV
@@ -91,7 +89,7 @@ std::string CgBinaryDisasm::GetSRCDisasm(const u32 n)
 		}
 		else
 		{
-			rsx_log.error("Bad input src num: %d", u32{ d1.input_src });
+			LOG_ERROR(RSX, "Bad input src num: %d", u32{ d1.input_src });
 			ret += fmt::format("v[%d] # bad src", d1.input_src);
 		}
 		break;
@@ -100,30 +98,26 @@ std::string CgBinaryDisasm::GetSRCDisasm(const u32 n)
 		break;
 
 	default:
-		rsx_log.error("Bad src%u reg type: %d", n, u32{ src[n].reg_type });
+		LOG_ERROR(RSX, "Bad src%u reg type: %d", n, u32{ src[n].reg_type });
 		Emu.Pause();
 		break;
 	}
 
-	static constexpr std::string_view f = "xyzw";
+	static const std::string f = "xyzw";
 
 	std::string swizzle;
-	swizzle.reserve(5);
-	swizzle += '.';
+
 	swizzle += f[src[n].swz_x];
 	swizzle += f[src[n].swz_y];
 	swizzle += f[src[n].swz_z];
 	swizzle += f[src[n].swz_w];
 
-	if (swizzle == ".xxxx") swizzle = ".x";
-	else if (swizzle == ".yyyy") swizzle = ".y";
-	else if (swizzle == ".zzzz") swizzle = ".z";
-	else if (swizzle == ".wwww") swizzle = ".w";
+	if (swizzle == "xxxx") swizzle = "x";
+	if (swizzle == "yyyy") swizzle = "y";
+	if (swizzle == "zzzz") swizzle = "z";
+	if (swizzle == "wwww") swizzle = "w";
 
-	if (swizzle != ".xyzw"sv)
-	{
-		ret += swizzle;
-	}
+	if (swizzle != f) ret += '.' + swizzle;
 
 	bool abs = false;
 
@@ -227,25 +221,20 @@ std::string CgBinaryDisasm::GetCondDisasm()
 		"ERROR"
 	};
 
-	static constexpr std::string_view f = "xyzw";
+	static const char f[4] = { 'x', 'y', 'z', 'w' };
 
 	std::string swizzle;
-	swizzle.reserve(5);
-	swizzle += '.';
 	swizzle += f[d0.mask_x];
 	swizzle += f[d0.mask_y];
 	swizzle += f[d0.mask_z];
 	swizzle += f[d0.mask_w];
 
-	if (swizzle == ".xxxx") swizzle = ".x";
-	else if (swizzle == ".yyyy") swizzle = ".y";
-	else if (swizzle == ".zzzz") swizzle = ".z";
-	else if (swizzle == ".wwww") swizzle = ".w";
+	if (swizzle == "xxxx") swizzle = "x";
+	if (swizzle == "yyyy") swizzle = "y";
+	if (swizzle == "zzzz") swizzle = "z";
+	if (swizzle == "wwww") swizzle = "w";
 
-	if (swizzle == ".xyzw"sv)
-	{
-		swizzle.clear();
-	}
+	swizzle = swizzle == "xyzw" ? "" : "." + swizzle;
 
 	return fmt::format("(%s%s)", cond_string_table[d0.cond], swizzle.c_str());
 }
@@ -279,26 +268,21 @@ void CgBinaryDisasm::AddCodeCondDisasm(const std::string& dst, const std::string
 		"ERROR"
 	};
 
-	static constexpr std::string_view f = "xyzw";
+	static const char f[4] = { 'x', 'y', 'z', 'w' };
 
 	std::string swizzle;
-	swizzle.reserve(5);
-	swizzle += '.';
 	swizzle += f[d0.mask_x];
 	swizzle += f[d0.mask_y];
 	swizzle += f[d0.mask_z];
 	swizzle += f[d0.mask_w];
 
-	if (swizzle == ".xxxx") swizzle = ".x";
-	else if (swizzle == ".yyyy") swizzle = ".y";
-	else if (swizzle == ".zzzz") swizzle = ".z";
-	else if (swizzle == ".wwww") swizzle = ".w";
+	if (swizzle == "xxxx") swizzle = "x";
+	if (swizzle == "yyyy") swizzle = "y";
+	if (swizzle == "zzzz") swizzle = "z";
+	if (swizzle == "wwww") swizzle = "w";
 
-	if (swizzle == ".xyzw"sv)
-	{
-		swizzle.clear();
-	}
-	
+	swizzle = swizzle == "xyzw" ? "" : "." + swizzle;
+
 	std::string cond = fmt::format("%s%s", cond_string_table[d0.cond], swizzle.c_str());
 	AddCodeDisasm(dst + "(" + cond + ") " + ", " + src + ";");
 }
@@ -306,13 +290,13 @@ void CgBinaryDisasm::AddCodeCondDisasm(const std::string& dst, const std::string
 
 std::string CgBinaryDisasm::AddAddrMaskDisasm()
 {
-	static constexpr std::string_view f = "xyzw";
+	static const char f[] = { 'x', 'y', 'z', 'w' };
 	return std::string(".") + f[d0.addr_swz];
 }
 
 std::string CgBinaryDisasm::AddAddrRegDisasm()
 {
-	//static constexpr std::string_view f = "xyzw";
+	static const char f[] = { 'x', 'y', 'z', 'w' };
 	return fmt::format("A%d", d0.addr_reg_sel_1) + AddAddrMaskDisasm();
 }
 
@@ -383,7 +367,7 @@ void CgBinaryDisasm::TaskVP()
 
 			if (i < m_data.size())
 			{
-				rsx_log.error("Program end before buffer end.");
+				LOG_ERROR(RSX, "Program end before buffer end.");
 			}
 
 			break;
@@ -429,7 +413,7 @@ void CgBinaryDisasm::TaskVP()
 		case RSX_SCA_OPCODE_POP: SetDSTScaDisasm(""); break;
 
 		default:
-			rsx_log.error("Unknown vp sca_opcode 0x%x", u32{ d1.sca_opcode });
+			LOG_ERROR(RSX, "Unknown vp sca_opcode 0x%x", u32{ d1.sca_opcode });
 			break;
 		}
 
@@ -462,7 +446,7 @@ void CgBinaryDisasm::TaskVP()
 		case RSX_VEC_OPCODE_TXL: SetDSTVecDisasm("$t, $0"); break;
 
 		default:
-			rsx_log.error("Unknown vp opcode 0x%x", u32{ d1.vec_opcode });
+			LOG_ERROR(RSX, "Unknown vp opcode 0x%x", u32{ d1.vec_opcode });
 			break;
 		}
 	}

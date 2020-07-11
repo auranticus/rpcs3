@@ -62,10 +62,11 @@ struct KbButton
 {
 	u32 m_keyCode;
 	u32 m_outKeyCode;
-	bool m_pressed = false;
+	bool m_pressed;
 
 	KbButton(u32 keyCode, u32 outKeyCode)
-		: m_keyCode(keyCode)
+		: m_pressed(false)
+		, m_keyCode(keyCode)
 		, m_outKeyCode(outKeyCode)
 	{
 	}
@@ -73,7 +74,7 @@ struct KbButton
 
 struct Keyboard
 {
-	bool m_key_repeat = false; // for future use
+	bool m_key_repeat; // for future use
 	KbData m_data;
 	KbConfig m_config;
 	std::vector<KbButton> m_buttons;
@@ -81,6 +82,7 @@ struct Keyboard
 	Keyboard()
 		: m_data()
 		, m_config()
+		, m_key_repeat(false)
 	{
 	}
 };

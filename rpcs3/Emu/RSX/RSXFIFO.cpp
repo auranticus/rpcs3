@@ -11,7 +11,6 @@ namespace rsx
 		FIFO_control::FIFO_control(::rsx::thread* pctrl)
 		{
 			m_ctrl = pctrl->ctrl;
-			m_iotable = &pctrl->iomap_table;
 		}
 
 		void FIFO_control::inc_get(bool wait)
@@ -32,7 +31,7 @@ namespace rsx
 		}
 
 		template <bool full>
-		inline u32 FIFO_control::read_put()
+		u32 FIFO_control::read_put()
 		{
 			if constexpr (!full)
 			{
@@ -40,20 +39,20 @@ namespace rsx
 			}
 			else
 			{
-				if (u32 put = m_ctrl->put; (put & 3) == 0) [[likely]]
-				{
-					return put;
-				}
-
 				return m_ctrl->put.and_fetch(~3);
 			}
+		}
+
+		void FIFO_control::set_put(u32 put)
+		{
+			m_ctrl->put = put;
 		}
 
 		void FIFO_control::set_get(u32 get)
 		{
 			if (m_ctrl->get == get)
 			{
-				if (const u32 addr = m_iotable->get_addr(m_memwatch_addr); addr + 1)
+				if (const auto addr = RSXIOMem.RealAddr(m_memwatch_addr))
 				{
 					m_memwatch_addr = get;
 					m_memwatch_cmp = vm::read32(addr);
@@ -88,30 +87,6 @@ namespace rsx
 			return false;
 		}
 
-		// Optimization for methods which can be batched together
-		// Beware, can be easily misused
-		bool FIFO_control::skip_methods(u32 count)
-		{
-			if (m_remaining_commands > count)
-			{
-				m_command_reg += m_command_inc * count;
-				m_args_ptr += 4 * count;
-				m_remaining_commands -= count;
-				m_internal_get += 4 * count;
-
-				return true;
-			}
-
-			m_internal_get += 4 * m_remaining_commands;
-			m_remaining_commands = 0;
-			return false;
-		}
-
-		void FIFO_control::abort()
-		{
-			m_remaining_commands = 0;
-		}
-
 		void FIFO_control::read(register_pair& data)
 		{
 			const u32 put = read_put();
@@ -134,7 +109,7 @@ namespace rsx
 			{
 				if (m_internal_get == m_memwatch_addr)
 				{
-					if (const u32 addr = m_iotable->get_addr(m_memwatch_addr); addr + 1)
+					if (const auto addr = RSXIOMem.RealAddr(m_memwatch_addr))
 					{
 						if (vm::read32(addr) == m_memwatch_cmp)
 						{
@@ -149,9 +124,11 @@ namespace rsx
 				m_memwatch_cmp = 0;
 			}
 
-			if (const u32 addr = m_iotable->get_addr(m_internal_get); addr + 1)
+			u32 cmd;
+
+			if (u32 addr = RSXIOMem.RealAddr(m_internal_get))
 			{
-				m_cmd = vm::read32(addr);
+				cmd = vm::read32(addr);
 			}
 			else
 			{
@@ -160,15 +137,15 @@ namespace rsx
 				return;
 			}
 
-			if (m_cmd & RSX_METHOD_NON_METHOD_CMD_MASK) [[unlikely]]
+			if (UNLIKELY(cmd & RSX_METHOD_NON_METHOD_CMD_MASK))
 			{
-				if ((m_cmd & RSX_METHOD_OLD_JUMP_CMD_MASK) == RSX_METHOD_OLD_JUMP_CMD ||
-					(m_cmd & RSX_METHOD_NEW_JUMP_CMD_MASK) == RSX_METHOD_NEW_JUMP_CMD ||
-					(m_cmd & RSX_METHOD_CALL_CMD_MASK) == RSX_METHOD_CALL_CMD ||
-					(m_cmd & RSX_METHOD_RETURN_MASK) == RSX_METHOD_RETURN_CMD)
+				if ((cmd & RSX_METHOD_OLD_JUMP_CMD_MASK) == RSX_METHOD_OLD_JUMP_CMD ||
+					(cmd & RSX_METHOD_NEW_JUMP_CMD_MASK) == RSX_METHOD_NEW_JUMP_CMD ||
+					(cmd & RSX_METHOD_CALL_CMD_MASK) == RSX_METHOD_CALL_CMD ||
+					(cmd & RSX_METHOD_RETURN_MASK) == RSX_METHOD_RETURN_CMD)
 				{
 					// Flow control, stop reading
-					data.reg = m_cmd;
+					data.reg = cmd;
 					return;
 				}
 
@@ -178,8 +155,8 @@ namespace rsx
 			}
 
 			// Validate the args ptr if the command attempts to read from it
-			m_args_ptr = m_iotable->get_addr(m_internal_get + 4);
-			if (m_args_ptr == umax) [[unlikely]]
+			m_args_ptr = RSXIOMem.RealAddr(m_internal_get + 4);
+			if (UNLIKELY(!m_args_ptr))
 			{
 				// Optional recovery
 				data.reg = FIFO_ERROR;
@@ -187,7 +164,7 @@ namespace rsx
 			}
 
 			verify(HERE), !m_remaining_commands;
-			const u32 count = (m_cmd >> 18) & 0x7ff;
+			const u32 count = (cmd >> 18) & 0x7ff;
 
 			if (!count)
 			{
@@ -199,15 +176,15 @@ namespace rsx
 			if (count > 1)
 			{
 				// Set up readback parameters
-				m_command_reg = m_cmd & 0xfffc;
-				m_command_inc = ((m_cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD) ? 0 : 4;
+				m_command_reg = cmd & 0xfffc;
+				m_command_inc = ((cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD) ? 0 : 4;
 				m_remaining_commands = count - 1;
 			}
 
 			inc_get(true); // Wait for data block to become available
 			m_internal_get += 4;
 
-			data.set(m_cmd & 0xfffc, vm::read32(m_args_ptr));
+			data.set(cmd & 0xfffc, vm::read32(m_args_ptr));
 		}
 
 		void flattening_helper::reset(bool _enabled)
@@ -221,7 +198,7 @@ namespace rsx
 		{
 			if (enabled)
 			{
-				rsx_log.warning("FIFO optimizations have been disabled as the application is not compatible with per-frame analysis");
+				LOG_WARNING(RSX, "FIFO optimizations have been disabled as the application is not compatible with per-frame analysis");
 
 				reset(false);
 				fifo_hint = optimization_hint::application_not_compatible;
@@ -298,7 +275,7 @@ namespace rsx
 				if (command.value)
 				{
 					// This is a BEGIN call
-					if (!deferred_primitive) [[likely]]
+					if (LIKELY(!deferred_primitive))
 					{
 						// New primitive block
 						deferred_primitive = command.value;
@@ -322,7 +299,7 @@ namespace rsx
 				}
 				else
 				{
-					rsx_log.error("Fifo flattener misalignment, disable FIFO reordering and report to developers");
+					LOG_ERROR(RSX, "Fifo flattener misalignment, disable FIFO reordering and report to developers");
 					begin_end_ctr = 0;
 					flush_cmd = 0u;
 				}
@@ -337,9 +314,9 @@ namespace rsx
 			}
 			default:
 			{
-				if (draw_count) [[unlikely]]
+				if (UNLIKELY(draw_count))
 				{
-					if (m_register_properties[reg] & register_props::always_ignore) [[unlikely]]
+					if (UNLIKELY(m_register_properties[reg] & register_props::always_ignore))
 					{
 						// Always ignore
 						command.reg = FIFO_DISABLED_COMMAND;
@@ -379,7 +356,7 @@ namespace rsx
 		fifo_ctrl->read(command);
 		const auto cmd = command.reg;
 
-		if (cmd & (0xffff0000 | RSX_METHOD_NON_METHOD_CMD_MASK)) [[unlikely]]
+		if (UNLIKELY(cmd & (0xffff0000 | RSX_METHOD_NON_METHOD_CMD_MASK)))
 		{
 			// Check for special FIFO commands
 			switch (cmd)
@@ -415,8 +392,11 @@ namespace rsx
 			}
 			case FIFO::FIFO_ERROR:
 			{
-				rsx_log.error("FIFO error: possible desync event (last cmd = 0x%x)", get_fifo_cmd());
-				recover_fifo();
+				// Error. Should reset the queue
+				LOG_ERROR(RSX, "FIFO error: possible desync event");
+				fifo_ctrl->set_get(restore_point);
+				fifo_ret_addr = saved_fifo_ret;
+				std::this_thread::sleep_for(1ms);
 				return;
 			}
 			}
@@ -431,13 +411,13 @@ namespace rsx
 					if (performance_counters.state == FIFO_state::running)
 					{
 						performance_counters.FIFO_idle_timestamp = get_system_time();
-						sync_point_request.release(true);
+						sync_point_request = true;
 					}
 
 					performance_counters.state = FIFO_state::spinning;
 				}
 
-				//rsx_log.warning("rsx jump(0x%x) #addr=0x%x, cmd=0x%x, get=0x%x, put=0x%x", offs, m_ioAddress + get, cmd, get, put);
+				//LOG_WARNING(RSX, "rsx jump(0x%x) #addr=0x%x, cmd=0x%x, get=0x%x, put=0x%x", offs, m_ioAddress + get, cmd, get, put);
 				fifo_ctrl->set_get(offs);
 				return;
 			}
@@ -450,13 +430,13 @@ namespace rsx
 					if (performance_counters.state == FIFO_state::running)
 					{
 						performance_counters.FIFO_idle_timestamp = get_system_time();
-						sync_point_request.release(true);
+						sync_point_request = true;
 					}
 
 					performance_counters.state = FIFO_state::spinning;
 				}
 
-				//rsx_log.warning("rsx jump(0x%x) #addr=0x%x, cmd=0x%x, get=0x%x, put=0x%x", offs, m_ioAddress + get, cmd, get, put);
+				//LOG_WARNING(RSX, "rsx jump(0x%x) #addr=0x%x, cmd=0x%x, get=0x%x, put=0x%x", offs, m_ioAddress + get, cmd, get, put);
 				fifo_ctrl->set_get(offs);
 				return;
 			}
@@ -465,8 +445,8 @@ namespace rsx
 				if (fifo_ret_addr != RSX_CALL_STACK_EMPTY)
 				{
 					// Only one layer is allowed in the call stack.
-					rsx_log.error("FIFO: CALL found inside a subroutine (last cmd = 0x%x)", get_fifo_cmd());
-					recover_fifo();
+					LOG_ERROR(RSX, "FIFO: CALL found inside a subroutine. Discarding subroutine");
+					fifo_ctrl->set_get(std::exchange(fifo_ret_addr, RSX_CALL_STACK_EMPTY));
 					return;
 				}
 
@@ -479,8 +459,8 @@ namespace rsx
 			{
 				if (fifo_ret_addr == RSX_CALL_STACK_EMPTY)
 				{
-					rsx_log.error("FIFO: RET found without corresponding CALL (last cmd = 0x%x)", get_fifo_cmd());
-					recover_fifo();
+					LOG_ERROR(RSX, "FIFO: RET found without corresponding CALL. Discarding queue");
+					fifo_ctrl->set_get(ctrl->put);
 					return;
 				}
 
@@ -492,26 +472,25 @@ namespace rsx
 			fmt::throw_exception("Unexpected command 0x%x" HERE, cmd);
 		}
 
-		if (const auto state = performance_counters.state;
-			state != FIFO_state::running)
+		if (performance_counters.state != FIFO_state::running)
 		{
-			performance_counters.state = FIFO_state::running;
+			//Update performance counters with time spent in idle mode
+			performance_counters.idle_time += (get_system_time() - performance_counters.FIFO_idle_timestamp);
 
-			// Hack: Delay FIFO wake-up according to setting
-			// NOTE: The typical spin setup is a NOP followed by a jump-to-self
-			// NOTE: There is a small delay when the jump address is dynamically edited by cell
-			if (state != FIFO_state::nop)
+			if (performance_counters.state == FIFO_state::spinning)
 			{
-				fifo_wake_delay();
+				//TODO: Properly simulate FIFO wake delay.
+				//NOTE: The typical spin setup is a NOP followed by a jump-to-self
+				//NOTE: There is a small delay when the jump address is dynamically edited by cell
+				busy_wait(3000);
 			}
 
-			// Update performance counters with time spent in idle mode
-			performance_counters.idle_time += (get_system_time() - performance_counters.FIFO_idle_timestamp);
+			performance_counters.state = FIFO_state::running;
 		}
 
 		do
 		{
-			if (capture_current_frame) [[unlikely]]
+			if (UNLIKELY(capture_current_frame))
 			{
 				const u32 reg = (command.reg & 0xfffc) >> 2;
 				const u32 value = command.value;
@@ -524,55 +503,24 @@ namespace rsx
 					rsx::frame_capture_data::replay_command replay_cmd;
 					replay_cmd.rsx_command = std::make_pair((reg << 2) | (1u << 18), value);
 
-					auto& commands = frame_capture.replay_commands;
-					commands.push_back(replay_cmd);
+					frame_capture.replay_commands.push_back(replay_cmd);
+					auto it = frame_capture.replay_commands.back();
 
 					switch (reg)
 					{
 					case NV3089_IMAGE_IN:
-						capture::capture_image_in(this, commands.back());
+						capture::capture_image_in(this, it);
 						break;
 					case NV0039_BUFFER_NOTIFY:
-						capture::capture_buffer_notify(this, commands.back());
+						capture::capture_buffer_notify(this, it);
 						break;
 					default:
-					{
-						static constexpr std::array<std::pair<u32, u32>, 3> ranges
-						{{
-							{NV308A_COLOR, 0x700},
-							{NV4097_SET_TRANSFORM_PROGRAM, 32},
-							{NV4097_SET_TRANSFORM_CONSTANT, 32}
-						}};
-
-						// Use legacy logic - enqueue leading command with count
-						// Then enqueue each command arg alone with a no-op command
-						for (const auto& range : ranges)
-						{
-							if (reg >= range.first && reg < range.first + range.second)
-							{
-								const u32 remaining = std::min<u32>(fifo_ctrl->get_remaining_args_count() + 1,
-									(fifo_ctrl->last_cmd() & RSX_METHOD_NON_INCREMENT_CMD_MASK) ? UINT32_MAX : (range.first + range.second) - reg);
-
-								commands.back().rsx_command.first = (fifo_ctrl->last_cmd() & RSX_METHOD_NON_INCREMENT_CMD_MASK) | (reg << 2) | (remaining << 18);
-
-								for (u32 i = 1; i < remaining && fifo_ctrl->get_pos() + (i - 1) * 4 != (ctrl->put & ~3); i++)
-								{
-									replay_cmd.rsx_command = std::make_pair(0, vm::read32(fifo_ctrl->get_current_arg_ptr() + (i * 4)));
-
-									commands.push_back(replay_cmd);
-								}
-
-								break;
-							}
-						}
-
 						break;
-					}
 					}
 				}
 			}
 
-			if (m_flattener.is_enabled()) [[unlikely]]
+			if (UNLIKELY(m_flattener.is_enabled()))
 			{
 				switch(m_flattener.test(command))
 				{

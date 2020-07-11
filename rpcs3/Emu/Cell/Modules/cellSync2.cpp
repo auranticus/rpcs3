@@ -1,4 +1,5 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "cellSync2.h"
@@ -335,8 +336,8 @@ error_code cellSync2QueueEstimateBufferSize(vm::cptr<CellSync2QueueAttribute> at
 	if (!attr || !bufferSize)
 		return CELL_SYNC2_ERROR_NULL_POINTER;
 
-	if (attr->elementSize == 0u || attr->elementSize > 0x4000u || attr->elementSize % 16u || attr->depth == 0u || attr->depth > 0xFFFFFFFCu ||
-		attr->maxPushWaiters > 0x8000u || attr->maxPopWaiters > 0x8000u)
+	if (attr->elementSize == 0 || attr->elementSize > 0x4000 || attr->elementSize % 16 || attr->depth == 0 || attr->depth > 0xFFFFFFFC ||
+		attr->maxPushWaiters > 0x8000 || attr->maxPopWaiters > 0x8000)
 		return CELL_SYNC2_ERROR_INVAL;
 
 	return CELL_OK;
@@ -349,8 +350,8 @@ error_code cellSync2QueueInitialize(vm::ptr<CellSync2Queue> queue, vm::ptr<void>
 	if (!queue || !buffer || !attr)
 		return CELL_SYNC2_ERROR_NULL_POINTER;
 
-	if (attr->elementSize == 0u || attr->elementSize > 0x4000u || attr->elementSize % 16u || attr->depth == 0u || attr->depth > 0xFFFFFFFCu ||
-		attr->maxPushWaiters > 0x8000u || attr->maxPopWaiters > 0x8000u)
+	if (attr->elementSize == 0 || attr->elementSize > 0x4000 || attr->elementSize % 16 || attr->depth == 0 || attr->depth > 0xFFFFFFFC ||
+		attr->maxPushWaiters > 0x8000 || attr->maxPopWaiters > 0x8000)
 		return CELL_SYNC2_ERROR_INVAL;
 
 	return CELL_OK;

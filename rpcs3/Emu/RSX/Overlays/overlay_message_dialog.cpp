@@ -1,8 +1,5 @@
 ﻿#include "stdafx.h"
-#include "overlay_message_dialog.h"
-#include "Emu/System.h"
-#include "Emu/system_config.h"
-#include "Emu/Cell/ErrorCodes.h"
+#include "overlays.h"
 
 namespace rsx
 {
@@ -60,13 +57,13 @@ namespace rsx
 
 					if (background_image->data)
 					{
-						const f32 color              = (100 - g_cfg.video.shader_preloading_dialog.darkening_strength) / 100.f;
+						f32 color                    = (100 - g_cfg.video.shader_preloading_dialog.darkening_strength) / 100.f;
 						background_poster.fore_color = color4f(color, color, color, 1.);
 						background.back_color.a      = 0.f;
 
 						background_poster.set_size(1280, 720);
 						background_poster.set_raw_image(background_image.get());
-						background_poster.set_blur_strength(static_cast<u8>(g_cfg.video.shader_preloading_dialog.blur_strength));
+						background_poster.set_blur_strength((u8)g_cfg.video.shader_preloading_dialog.blur_strength);
 					}
 				}
 			}
@@ -76,11 +73,6 @@ namespace rsx
 
 		compiled_resource message_dialog::get_compiled()
 		{
-			if (!visible)
-			{
-				return {};
-			}
-
 			compiled_resource result;
 
 			if (background_image && background_image->data)
@@ -159,13 +151,11 @@ namespace rsx
 			default: return;
 			}
 
-			close(true, true);
+			close();
 		}
 
-		error_code message_dialog::show(bool is_blocking, const std::string& text, const MsgDialogType& type, std::function<void(s32 status)> on_close)
+		error_code message_dialog::show(const std::string& text, const MsgDialogType& type, std::function<void(s32 status)> on_close)
 		{
-			visible = false;
-
 			num_progress_bars = type.progress_bar_count;
 			if (num_progress_bars)
 			{
@@ -184,7 +174,7 @@ namespace rsx
 				btn_cancel.translate(0, offset);
 			}
 
-			text_display.set_text(text);
+			text_display.set_text(utf8_to_ascii8(text));
 
 			u16 text_w, text_h;
 			text_display.measure_text(text_w, text_h);
@@ -207,75 +197,18 @@ namespace rsx
 				interactive = true;
 				ok_only     = true;
 				break;
-			case CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO:
-				interactive = true;
-				break;
-			default:
-				break;
+			case CELL_MSGDIALOG_TYPE_BUTTON_TYPE_YESNO: interactive = true; break;
 			}
 
 			this->on_close = std::move(on_close);
-			visible = true;
-
-			if (is_blocking)
+			if (interactive)
 			{
-				if (interactive)
-				{
+				thread_ctrl::spawn("dialog input thread", [&] {
 					if (auto error = run_input_loop())
 					{
-						rsx_log.error("Dialog input loop exited with error code=%d", error);
-						return error;
+						LOG_ERROR(RSX, "Dialog input loop exited with error code=%d", error);
 					}
-				}
-				else
-				{
-					while (!exit)
-					{
-						refresh();
-
-						// Only update the screen at about 60fps since updating it everytime slows down the process
-						std::this_thread::sleep_for(16ms);
-					}
-				}
-			}
-			else
-			{
-				if (!exit)
-				{
-					g_fxo->init<named_thread>("MsgDialog Thread", [&, tbit = alloc_thread_bit()]()
-					{
-						g_thread_bit = tbit;
-
-						if (interactive)
-						{
-							auto ref = g_fxo->get<display_manager>()->get(uid);
-
-							if (auto error = run_input_loop())
-							{
-								rsx_log.error("Dialog input loop exited with error code=%d", error);
-							}
-						}
-						else
-						{
-							while (!exit && thread_ctrl::state() != thread_state::aborting)
-							{
-								refresh();
-
-								// Only update the screen at about 60fps since updating it everytime slows down the process
-								std::this_thread::sleep_for(16ms);
-
-								if (!g_fxo->get<display_manager>())
-								{
-									rsx_log.fatal("display_manager was improperly destroyed");
-									break;
-								}
-							}
-						}
-
-						thread_bits &= ~tbit;
-						thread_bits.notify_all();
-					});
-				}
+				});
 			}
 
 			return CELL_OK;
@@ -314,8 +247,8 @@ namespace rsx
 			else
 				progress_2.inc(value);
 
-			if (index == static_cast<u32>(taskbar_index) || taskbar_index == -1)
-				Emu.GetCallbacks().handle_taskbar_progress(1, static_cast<s32>(value));
+			if (index == taskbar_index || taskbar_index == -1)
+				Emu.GetCallbacks().handle_taskbar_progress(1, (s32)value);
 
 			return CELL_OK;
 		}
@@ -341,11 +274,11 @@ namespace rsx
 				return CELL_MSGDIALOG_ERROR_PARAM;
 
 			if (index == 0)
-				progress_1.set_limit(static_cast<f32>(limit));
+				progress_1.set_limit((float)limit);
 			else
-				progress_2.set_limit(static_cast<f32>(limit));
+				progress_2.set_limit((float)limit);
 
-			if (index == static_cast<u32>(taskbar_index))
+			if (index == taskbar_index)
 			{
 				taskbar_limit = limit;
 				Emu.GetCallbacks().handle_taskbar_progress(2, taskbar_limit);

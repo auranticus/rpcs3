@@ -1,25 +1,18 @@
 ﻿#pragma once
 
 #include "stdafx.h"
-#include <QDir>
+#include <QtCore>
 #include <QComboBox>
 #include <QFont>
 #include <QIcon>
 #include <QLabel>
 #include <QTableWidget>
 #include <QHeaderView>
-#include <QTreeWidgetItem>
 
 namespace gui
 {
 	namespace utils
 	{
-		template<typename T>
-		static QSet<T> list_to_set(const QList<T>& list)
-		{
-			return QSet<T>(list.begin(), list.end());
-		}
-
 		// Creates a frame geometry rectangle with given width height that's centered inside the origin,
 		// while still considering screen boundaries.
 		QRect create_centered_window_geometry(const QRect& origin, s32 width, s32 height);
@@ -43,9 +36,6 @@ namespace gui
 		// Returns the font of the QLabels with object_name
 		QFont get_label_font(const QString& object_name);
 
-		// Returns the width of the text
-		int get_label_width(const QString& text);
-
 		// Returns the part of the image loaded from path that is inside the bounding box of its opaque areas
 		QImage get_opaque_image_area(const QString& path);
 
@@ -60,29 +50,5 @@ namespace gui
 
 		// Loads the app icon from path and embeds it centered into an empty square icon
 		QIcon get_app_icon_from_path(const std::string& path, const std::string& title_id);
-
-		// Open a path in the explorer and mark the file
-		void open_dir(const std::string& spath);
-
-		// Open a path in the explorer and mark the file
-		void open_dir(const QString& path);
-
-		// Finds a child of a QTreeWidgetItem with given text
-		QTreeWidgetItem* find_child(QTreeWidgetItem* parent, const QString& text);
-
-		// Finds all children of a QTreeWidgetItem that match the given criteria
-		QList<QTreeWidgetItem*> find_children_by_data(QTreeWidgetItem* parent, const QList<QPair<int /*role*/, QVariant /*data*/>>& criteria, bool recursive);
-
-		// Constructs and adds a child to a QTreeWidgetItem
-		QTreeWidgetItem* add_child(QTreeWidgetItem* parent, const QString& text, int column = 0);
-
-		// Removes all children of a QTreeWidgetItem
-		void remove_children(QTreeWidgetItem* parent);
-
-		// Removes all children of a QTreeWidgetItem that don't match the given criteria
-		void remove_children(QTreeWidgetItem* parent, const QList<QPair<int /*role*/, QVariant /*data*/>>& criteria, bool recursive);
-
-		// Sort a QTreeWidget (currently only column 0)
-		void sort_tree(QTreeWidget* tree, Qt::SortOrder sort_order, bool recursive);
 	} // utils
 } // gui

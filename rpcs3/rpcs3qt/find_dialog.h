@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <QDialog>
 #include <QTextEdit>
@@ -8,10 +8,9 @@
 
 class find_dialog : public QDialog
 {
-	Q_OBJECT
-
 public:
 	find_dialog(QTextEdit* edit, QWidget *parent = Q_NULLPTR, Qt::WindowFlags f = Qt::WindowFlags());
+	~find_dialog();
 
 private:
 	int m_count_lines = 0;

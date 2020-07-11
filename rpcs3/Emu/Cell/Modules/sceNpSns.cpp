@@ -4,7 +4,6 @@
 
 #include "sceNpSns.h"
 #include "sceNp.h"
-#include "Emu/NP/np_handler.h"
 
 LOG_CHANNEL(sceNpSns);
 
@@ -117,10 +116,14 @@ error_code sceNpSnsFbDestroyHandle(u32 handle)
 		return SCE_NP_SNS_ERROR_INVALID_ARGUMENT;
 	}
 
-	if (!idm::remove<sns_fb_handle_t>(handle))
+	const auto sfh = idm::get<sns_fb_handle_t>(handle);
+
+	if (!sfh)
 	{
 		return SCE_NP_SNS_FB_ERROR_UNKNOWN_HANDLE;
 	}
+
+	idm::remove<sns_fb_handle_t>(handle);
 
 	return CELL_OK;
 }
@@ -179,11 +182,9 @@ error_code sceNpSnsFbGetAccessToken(u32 handle, vm::cptr<SceNpSnsFbAccessTokenPa
 		return SCE_NP_SNS_FB_ERROR_UNKNOWN_HANDLE;
 	}
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (nph->get_psn_status() == SCE_NP_MANAGER_STATUS_OFFLINE)
+	if (g_psn_connection_status == SCE_NP_MANAGER_STATUS_OFFLINE)
 	{
-		return not_an_error(SCE_NP_SNS_ERROR_NOT_SIGN_IN);
+		return SCE_NP_SNS_ERROR_NOT_SIGN_IN;
 	}
 
 	// TODO
@@ -306,11 +307,9 @@ error_code sceNpSnsFbGetLongAccessToken(u32 handle, vm::cptr<SceNpSnsFbAccessTok
 		return SCE_NP_SNS_FB_ERROR_UNKNOWN_HANDLE;
 	}
 
-	const auto nph = g_fxo->get<named_thread<np_handler>>();
-
-	if (nph->get_psn_status() == SCE_NP_MANAGER_STATUS_OFFLINE)
+	if (g_psn_connection_status == SCE_NP_MANAGER_STATUS_OFFLINE)
 	{
-		return not_an_error(SCE_NP_SNS_ERROR_NOT_SIGN_IN);
+		return SCE_NP_SNS_ERROR_NOT_SIGN_IN;
 	}
 
 	return CELL_OK;

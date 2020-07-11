@@ -1,8 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.8.2)
 
-if(USE_PRECOMPILED_HEADERS AND NOT COMMAND target_precompile_headers)
-	include(cotire)
-endif()
+include(cotire)
 
 # Generate git-version.h at build time.
 include(${CMAKE_CURRENT_SOURCE_DIR}/git-version.cmake)
@@ -18,14 +16,6 @@ elseif(NOT MSVC AND NOT CMAKE_CXX_FLAGS MATCHES "LIBICONV_PLUG")
 	#it seems like glibc includes the iconv functions we use but other libc
 	#implementations like the one on OSX don't seem implement them
 	set(ADDITIONAL_LIBS ${ADDITIONAL_LIBS} "iconv")
-endif()
-
-if(UNIX AND NOT APPLE)
-	# Optionally enable X11 for window management
-	find_package(X11)
-	if(X11_FOUND)
-		add_definitions(-DHAVE_X11)
-	endif()
 endif()
 
 if(NOT RPCS3_SRC_DIR)
@@ -46,23 +36,21 @@ add_subdirectory(Emu)
 add_subdirectory(rpcs3qt)
 
 set(RPCS3_SRC
-	display_sleep_control.cpp
+	basic_keyboard_handler.cpp
+	basic_mouse_handler.cpp
+	ds3_pad_handler.cpp
+	ds4_pad_handler.cpp
+	evdev_joystick_handler.cpp
 	headless_application.cpp
+	keyboard_pad_handler.cpp
 	main.cpp
 	main_application.cpp
+	mm_joystick_handler.cpp
+	pad_thread.cpp
 	rpcs3_version.cpp
 	stb_image.cpp
 	stdafx.cpp
-
-	Input/basic_keyboard_handler.cpp
-	Input/basic_mouse_handler.cpp
-	Input/ds3_pad_handler.cpp
-	Input/ds4_pad_handler.cpp
-	Input/evdev_joystick_handler.cpp
-	Input/keyboard_pad_handler.cpp
-	Input/mm_joystick_handler.cpp
-	Input/pad_thread.cpp
-	Input/xinput_pad_handler.cpp
+	xinput_pad_handler.cpp
 )
 
 if(WIN32)
@@ -91,13 +79,10 @@ if (WIN32)
 	target_sources(rpcs3 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/rpcs3.rc")
 endif()
 
-# Unix display manager
-if(X11_FOUND)
+if(UNIX AND NOT APPLE)
+	find_package(X11 REQUIRED)
 	target_include_directories(rpcs3 PUBLIC ${X11_INCLUDE_DIR})
 	target_link_libraries(rpcs3 ${X11_LIBRARIES})
-elseif(USE_VULKAN AND UNIX AND NOT WAYLAND_FOUND AND NOT APPLE)
-	# Wayland has been checked in 3rdparty/CMakeLists.txt already.
-	message(FATAL_ERROR "RPCS3 requires either X11 or Wayland (or both) for Vulkan.")
 endif()
 
 if(UNIX)
@@ -112,17 +97,11 @@ else()
 	target_link_libraries(rpcs3 ${CMAKE_DL_LIBS})
 endif()
 
-if(USE_PRECOMPILED_HEADERS)
-	if(COMMAND target_precompile_headers)
-		target_precompile_headers(rpcs3 PRIVATE "${RPCS3_SRC_DIR}/stdafx.h")
-	else()
-		set_target_properties(rpcs3 PROPERTIES
-			COTIRE_CXX_PREFIX_HEADER_INIT "${RPCS3_SRC_DIR}/stdafx.h"
-			COTIRE_ADD_UNITY_BUILD OFF)
+set_target_properties(rpcs3 PROPERTIES
+	COTIRE_CXX_PREFIX_HEADER_INIT "${RPCS3_SRC_DIR}/stdafx.h"
+	COTIRE_ADD_UNITY_BUILD OFF)
 
-		cotire(rpcs3)
-	endif()
-endif()
+cotire(rpcs3)
 
 # Copy icons to executable directory
 if(APPLE)
@@ -138,10 +117,6 @@ elseif(UNIX)
 	add_custom_command(TARGET rpcs3 POST_BUILD
 			COMMAND ${CMAKE_COMMAND} -E copy_directory
 			${CMAKE_SOURCE_DIR}/bin/Icons $<TARGET_FILE_DIR:rpcs3>/Icons)
-elseif(WIN32)
-	add_custom_command(TARGET rpcs3 POST_BUILD
-			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/bin" "$<TARGET_FILE_DIR:rpcs3>"
-			COMMAND "${Qt5_DIR}/../../../bin/windeployqt" --no-angle --no-compiler-runtime --no-opengl-sw --no-patchqt --no-svg --no-translations --no-quick --plugindir "$<TARGET_FILE_DIR:rpcs3>/qt/plugins" --release "$<TARGET_FILE:rpcs3>")
 endif()
 
 # Unix installation

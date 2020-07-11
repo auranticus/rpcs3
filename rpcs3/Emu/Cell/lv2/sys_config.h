@@ -180,7 +180,7 @@ private:
 	{
 		if (auto sptr = queue.lock())
 		{
-			return sptr->send(source, d1, d2, d3) == 0;
+			return sptr->send(source, d1, d2, d3);
 		}
 		return false;
 	}
@@ -195,10 +195,12 @@ public:
 	template <typename... Args>
 	static std::shared_ptr<lv2_config_handle> create(Args&&... args)
 	{
-		if (auto cfg = idm::make_ptr<lv2_config_handle>(std::forward<Args>(args)...))
+		auto cfg = std::make_shared<lv2_config_handle>(std::forward<Args>(args)...);
+
+		if (const u32 idm_id = idm::import_existing<lv2_config_handle>(cfg))
 		{
-			cfg->idm_id = idm::last_id();
-			return cfg;
+			cfg->idm_id = idm_id;
+			return std::move(cfg);
 		}
 		return nullptr;
 	}
@@ -251,11 +253,13 @@ public:
 	template <typename... Args>
 	static std::shared_ptr<lv2_config_service> create(Args&&... args)
 	{
-		if (auto service = idm::make_ptr<lv2_config_service>(std::forward<Args>(args)...))
+		auto service = std::make_shared<lv2_config_service>(std::forward<Args>(args)...);
+
+		if (const u32 idm_id = idm::import_existing<lv2_config_service>(service))
 		{
 			service->wkptr = service;
-			service->idm_id = idm::last_id();
-			return service;
+			service->idm_id = idm_id;
+			return std::move(service);
 		}
 
 		return nullptr;
@@ -316,11 +320,13 @@ public:
 	template <typename... Args>
 	static std::shared_ptr<lv2_config_service_listener> create(Args&&... args)
 	{
-		if (auto listener = idm::make_ptr<lv2_config_service_listener>(std::forward<Args>(args)...))
+		auto listener = std::make_shared<lv2_config_service_listener>(std::forward<Args>(args)...);
+
+		if (const u32 idm_id = idm::import_existing<lv2_config_service_listener>(listener))
 		{
 			listener->wkptr = listener;
-			listener->idm_id = idm::last_id();
-			return listener;
+			listener->idm_id = idm_id;
+			return std::move(listener);
 		}
 
 		return nullptr;
@@ -347,12 +353,8 @@ class lv2_config_service_event
 {
 	static u32 get_next_id()
 	{
-		struct service_event_id
-		{
-			atomic_t<u32> next_id = 0;
-		};
-
-		return g_fxo->get<service_event_id>()->next_id++;
+		static atomic_t<u32> next_id = 0;
+		return next_id++;
 	}
 
 public:
@@ -387,7 +389,7 @@ public:
 
 		g_fxo->get<lv2_config>()->add_service_event(ev);
 
-		return ev;
+		return std::move(ev);
 	}
 
 	// Destructor

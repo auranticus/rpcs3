@@ -1,5 +1,5 @@
 ﻿#include "stdafx.h"
-#include "Emu/system_config.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 #include "Emu/IdManager.h"
 #include "Emu/RSX/rsx_utils.h"
@@ -11,27 +11,6 @@
 #include "cellSysutil.h"
 
 LOG_CHANNEL(cellAvconfExt);
-
-template<>
-void fmt_class_string<CellAudioInError>::format(std::string& out, u64 arg)
-{
-	format_enum(out, arg, [](auto error)
-	{
-		switch (error)
-		{
-			STR_CASE(CELL_AUDIO_IN_ERROR_NOT_IMPLEMENTED);
-			STR_CASE(CELL_AUDIO_IN_ERROR_ILLEGAL_CONFIGURATION);
-			STR_CASE(CELL_AUDIO_IN_ERROR_ILLEGAL_PARAMETER);
-			STR_CASE(CELL_AUDIO_IN_ERROR_PARAMETER_OUT_OF_RANGE);
-			STR_CASE(CELL_AUDIO_IN_ERROR_DEVICE_NOT_FOUND);
-			STR_CASE(CELL_AUDIO_IN_ERROR_UNSUPPORTED_AUDIO_IN);
-			STR_CASE(CELL_AUDIO_IN_ERROR_UNSUPPORTED_SOUND_MODE);
-			STR_CASE(CELL_AUDIO_IN_ERROR_CONDITION_BUSY);
-		}
-
-		return unknown;
-	});
-}
 
 struct avconf_manager
 {
@@ -46,7 +25,7 @@ avconf_manager::avconf_manager()
 	u32 curindex = 0;
 
 	auto mic_list = fmt::split(g_cfg.audio.microphone_devices, {"@@@"});
-	if (!mic_list.empty())
+	if (mic_list.size())
 	{
 		switch (g_cfg.audio.microphone_type)
 		{
@@ -64,7 +43,7 @@ avconf_manager::avconf_manager()
 				devices[curindex].availableModes[0].channel = CELL_AUDIO_IN_CHNUM_2;
 				devices[curindex].availableModes[0].fs      = CELL_AUDIO_IN_FS_8KHZ | CELL_AUDIO_IN_FS_12KHZ | CELL_AUDIO_IN_FS_16KHZ | CELL_AUDIO_IN_FS_24KHZ | CELL_AUDIO_IN_FS_32KHZ | CELL_AUDIO_IN_FS_48KHZ;
 				devices[curindex].deviceNumber              = curindex;
-				strcpy_trunc(devices[curindex].name, mic_list[index]);
+				strcpy(devices[curindex].name, mic_list[index].c_str());
 
 				curindex++;
 			}
@@ -83,7 +62,7 @@ avconf_manager::avconf_manager()
 			devices[curindex].availableModes[0].channel = CELL_AUDIO_IN_CHNUM_2;
 			devices[curindex].availableModes[0].fs      = CELL_AUDIO_IN_FS_8KHZ | CELL_AUDIO_IN_FS_12KHZ | CELL_AUDIO_IN_FS_16KHZ | CELL_AUDIO_IN_FS_24KHZ | CELL_AUDIO_IN_FS_32KHZ | CELL_AUDIO_IN_FS_48KHZ;
 			devices[curindex].deviceNumber              = curindex;
-			strcpy_trunc(devices[curindex].name, mic_list[0]);
+			strcpy(devices[curindex].name, mic_list[0].c_str());
 
 			curindex++;
 			break;
@@ -99,7 +78,7 @@ avconf_manager::avconf_manager()
 			devices[curindex].availableModes[0].channel = CELL_AUDIO_IN_CHNUM_1;
 			devices[curindex].availableModes[0].fs      = CELL_AUDIO_IN_FS_8KHZ | CELL_AUDIO_IN_FS_12KHZ | CELL_AUDIO_IN_FS_16KHZ | CELL_AUDIO_IN_FS_24KHZ | CELL_AUDIO_IN_FS_32KHZ | CELL_AUDIO_IN_FS_48KHZ;
 			devices[curindex].deviceNumber              = curindex;
-			strcpy_trunc(devices[curindex].name, mic_list[0]);
+			strcpy(devices[curindex].name, mic_list[0].c_str());
 
 			curindex++;
 			break;
@@ -120,7 +99,7 @@ avconf_manager::avconf_manager()
 		devices[curindex].availableModes[0].channel = CELL_AUDIO_IN_CHNUM_NONE;
 		devices[curindex].availableModes[0].fs      = CELL_AUDIO_IN_FS_8KHZ | CELL_AUDIO_IN_FS_12KHZ | CELL_AUDIO_IN_FS_16KHZ | CELL_AUDIO_IN_FS_24KHZ | CELL_AUDIO_IN_FS_32KHZ | CELL_AUDIO_IN_FS_48KHZ;
 		devices[curindex].deviceNumber              = curindex;
-		strcpy_trunc(devices[curindex].name, "USB Camera");
+		strcpy(devices[curindex].name, "USB Camera");
 
 		curindex++;
 	}
@@ -139,41 +118,36 @@ void avconf_manager::copy_device_info(u32 num, vm::ptr<CellAudioInDeviceInfo> in
 	info->availableModes[0].channel = devices[num].availableModes[0].channel;
 	info->availableModes[0].fs      = devices[num].availableModes[0].fs;
 	info->deviceNumber              = devices[num].deviceNumber;
-	strcpy_trunc(info->name, devices[num].name);
+	strcpy(info->name, devices[num].name);
 }
 
-error_code cellAudioOutUnregisterDevice(u32 deviceNumber)
+s32 cellAudioOutUnregisterDevice(u32 deviceNumber)
 {
 	cellAvconfExt.todo("cellAudioOutUnregisterDevice(deviceNumber=0x%x)", deviceNumber);
 	return CELL_OK;
 }
 
-error_code cellAudioOutGetDeviceInfo2(u32 deviceNumber, u32 deviceIndex, vm::ptr<CellAudioOutDeviceInfo2> info)
+s32 cellAudioOutGetDeviceInfo2(u32 deviceNumber, u32 deviceIndex, vm::ptr<CellAudioOutDeviceInfo2> info)
 {
 	cellAvconfExt.todo("cellAudioOutGetDeviceInfo2(deviceNumber=0x%x, deviceIndex=0x%x, info=*0x%x)", deviceNumber, deviceIndex, info);
 	return CELL_OK;
 }
 
-error_code cellVideoOutSetXVColor()
+s32 cellVideoOutSetXVColor()
 {
 	UNIMPLEMENTED_FUNC(cellAvconfExt);
 	return CELL_OK;
 }
 
-error_code cellVideoOutSetupDisplay()
+s32 cellVideoOutSetupDisplay()
 {
 	UNIMPLEMENTED_FUNC(cellAvconfExt);
 	return CELL_OK;
 }
 
-error_code cellAudioInGetDeviceInfo(u32 deviceNumber, u32 deviceIndex, vm::ptr<CellAudioInDeviceInfo> info)
+s32 cellAudioInGetDeviceInfo(u32 deviceNumber, u32 deviceIndex, vm::ptr<CellAudioInDeviceInfo> info)
 {
 	cellAvconfExt.todo("cellAudioInGetDeviceInfo(deviceNumber=0x%x, deviceIndex=0x%x, info=*0x%x)", deviceNumber, deviceIndex, info);
-
-	if (deviceIndex != 0 || !info)
-	{
-		return CELL_AUDIO_IN_ERROR_ILLEGAL_PARAMETER;
-	}
 
 	auto av_manager = g_fxo->get<avconf_manager>();
 
@@ -185,14 +159,14 @@ error_code cellAudioInGetDeviceInfo(u32 deviceNumber, u32 deviceIndex, vm::ptr<C
 	return CELL_OK;
 }
 
-error_code cellVideoOutConvertCursorColor(u32 videoOut, s32 displaybuffer_format, f32 gamma, s32 source_buffer_format, vm::ptr<void> src_addr, vm::ptr<u32> dest_addr, s32 num)
+s32 cellVideoOutConvertCursorColor(u32 videoOut, s32 displaybuffer_format, f32 gamma, s32 source_buffer_format, vm::ptr<void> src_addr, vm::ptr<u32> dest_addr, s32 num)
 {
 	cellAvconfExt.todo("cellVideoOutConvertCursorColor(videoOut=%d, displaybuffer_format=0x%x, gamma=0x%x, source_buffer_format=0x%x, src_addr=*0x%x, dest_addr=*0x%x, num=0x%x)", videoOut,
-			displaybuffer_format, gamma, source_buffer_format, src_addr, dest_addr, num);
+	    displaybuffer_format, gamma, source_buffer_format, src_addr, dest_addr, num);
 	return CELL_OK;
 }
 
-error_code cellVideoOutGetGamma(u32 videoOut, vm::ptr<f32> gamma)
+s32 cellVideoOutGetGamma(u32 videoOut, vm::ptr<f32> gamma)
 {
 	cellAvconfExt.warning("cellVideoOutGetGamma(videoOut=%d, gamma=*0x%x)", videoOut, gamma);
 
@@ -207,45 +181,45 @@ error_code cellVideoOutGetGamma(u32 videoOut, vm::ptr<f32> gamma)
 	return CELL_OK;
 }
 
-error_code cellAudioInGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioInDeviceInfo> device_info)
+s32 cellAudioInGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioInDeviceInfo> device_info)
 {
 	cellAvconfExt.todo("cellAudioInGetAvailableDeviceInfo(count=0x%x, info=*0x%x)", count, device_info);
 
-	if (count > 16 || !device_info)
+	if (count > 16 || !device_info.addr())
 	{
 		return CELL_AUDIO_IN_ERROR_ILLEGAL_PARAMETER;
 	}
 
 	auto av_manager = g_fxo->get<avconf_manager>();
 
-	u32 num_devices_returned = std::min<u32>(count, ::size32(av_manager->devices));
+	u32 num_devices_returned = std::min(count, (u32)av_manager->devices.size());
 
 	for (u32 index = 0; index < num_devices_returned; index++)
 	{
 		av_manager->copy_device_info(index, device_info + index);
 	}
 
-	return not_an_error(num_devices_returned);
+	return (s32)num_devices_returned;
 }
 
-error_code cellAudioOutGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioOutDeviceInfo2> info)
+s32 cellAudioOutGetAvailableDeviceInfo(u32 count, vm::ptr<CellAudioOutDeviceInfo2> info)
 {
 	cellAvconfExt.todo("cellAudioOutGetAvailableDeviceInfo(count=0x%x, info=*0x%x)", count, info);
-	return not_an_error(0); // number of available devices
+	return 0; // number of available devices
 }
 
-error_code cellVideoOutSetGamma(u32 videoOut, f32 gamma)
+s32 cellVideoOutSetGamma(u32 videoOut, f32 gamma)
 {
 	cellAvconfExt.warning("cellVideoOutSetGamma(videoOut=%d, gamma=%f)", videoOut, gamma);
-
-	if (!(gamma >= 0.8f && gamma <= 1.2f))
-	{
-		return CELL_VIDEO_OUT_ERROR_ILLEGAL_PARAMETER;
-	}
 
 	if (videoOut != CELL_VIDEO_OUT_PRIMARY)
 	{
 		return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
+	}
+
+	if (gamma < 0.8f || gamma > 1.2f)
+	{
+		return CELL_VIDEO_OUT_ERROR_ILLEGAL_PARAMETER;
 	}
 
 	auto conf   = g_fxo->get<rsx::avconf>();
@@ -254,58 +228,44 @@ error_code cellVideoOutSetGamma(u32 videoOut, f32 gamma)
 	return CELL_OK;
 }
 
-error_code cellAudioOutRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::ptr<CellAudioOutRegistrationOption> option, vm::ptr<CellAudioOutDeviceConfiguration> config)
+s32 cellAudioOutRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::ptr<CellAudioOutRegistrationOption> option, vm::ptr<CellAudioOutDeviceConfiguration> config)
 {
 	cellAvconfExt.todo("cellAudioOutRegisterDevice(deviceType=0x%llx, name=%s, option=*0x%x, config=*0x%x)", deviceType, name, option, config);
-	return not_an_error(0); // device number
+	return 0; // device number
 }
 
-error_code cellAudioOutSetDeviceMode(u32 deviceMode)
+s32 cellAudioOutSetDeviceMode(u32 deviceMode)
 {
 	cellAvconfExt.todo("cellAudioOutSetDeviceMode(deviceMode=0x%x)", deviceMode);
 	return CELL_OK;
 }
 
-error_code cellAudioInSetDeviceMode(u32 deviceMode)
+s32 cellAudioInSetDeviceMode(u32 deviceMode)
 {
 	cellAvconfExt.todo("cellAudioInSetDeviceMode(deviceMode=0x%x)", deviceMode);
 	return CELL_OK;
 }
 
-error_code cellAudioInRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::ptr<CellAudioInRegistrationOption> option, vm::ptr<CellAudioInDeviceConfiguration> config)
+s32 cellAudioInRegisterDevice(u64 deviceType, vm::cptr<char> name, vm::ptr<CellAudioInRegistrationOption> option, vm::ptr<CellAudioInDeviceConfiguration> config)
 {
 	cellAvconfExt.todo("cellAudioInRegisterDevice(deviceType=0x%llx, name=%s, option=*0x%x, config=*0x%x)", deviceType, name, option, config);
 
-	// option must be null, volume can be 1 (soft) to 5 (loud) (raises question about check for volume = 0)
-	if (option || !config || !name || config->volume > 5)
-	{
-		return CELL_AUDIO_IN_ERROR_ILLEGAL_PARAMETER;
-	}
-
-	return not_an_error(0); // device number
+	return 0; // device number
 }
 
-error_code cellAudioInUnregisterDevice(u32 deviceNumber)
+s32 cellAudioInUnregisterDevice(u32 deviceNumber)
 {
 	cellAvconfExt.todo("cellAudioInUnregisterDevice(deviceNumber=0x%x)", deviceNumber);
 	return CELL_OK;
 }
 
-error_code cellVideoOutGetScreenSize(u32 videoOut, vm::ptr<f32> screenSize)
+s32 cellVideoOutGetScreenSize(u32 videoOut, vm::ptr<f32> screenSize)
 {
 	cellAvconfExt.warning("cellVideoOutGetScreenSize(videoOut=%d, screenSize=*0x%x)", videoOut, screenSize);
 
 	if (videoOut != CELL_VIDEO_OUT_PRIMARY)
 	{
 		return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
-	}
-
-	if (g_cfg.video.enable_3d)
-	{
-		// Return Playstation 3D display value
-		// Some games call this function when 3D is enabled
-		*screenSize = 24.f;
-		return CELL_OK;
 	}
 
 	//	TODO: Use virtual screen size
@@ -320,33 +280,9 @@ error_code cellVideoOutGetScreenSize(u32 videoOut, vm::ptr<f32> screenSize)
 	return CELL_VIDEO_OUT_ERROR_VALUE_IS_NOT_SET;
 }
 
-error_code cellVideoOutSetCopyControl(u32 videoOut, u32 control)
+s32 cellVideoOutSetCopyControl(u32 videoOut, u32 control)
 {
 	cellAvconfExt.todo("cellVideoOutSetCopyControl(videoOut=%d, control=0x%x)", videoOut, control);
-	return CELL_OK;
-}
-
-error_code cellVideoOutConfigure2()
-{
-	cellAvconfExt.todo("cellVideoOutConfigure2()");
-	return CELL_OK;
-}
-
-error_code cellAudioOutGetConfiguration2()
-{
-	cellAvconfExt.todo("cellAudioOutGetConfiguration2()");
-	return CELL_OK;
-}
-
-error_code cellAudioOutConfigure2()
-{
-	cellAvconfExt.todo("cellAudioOutConfigure2()");
-	return CELL_OK;
-}
-
-error_code cellVideoOutGetResolutionAvailability2()
-{
-	cellAvconfExt.todo("cellVideoOutGetResolutionAvailability2()");
 	return CELL_OK;
 }
 
@@ -369,8 +305,4 @@ DECLARE(ppu_module_manager::cellAvconfExt)
 	REG_FUNC(cellSysutilAvconfExt, cellAudioInUnregisterDevice);
 	REG_FUNC(cellSysutilAvconfExt, cellVideoOutGetScreenSize);
 	REG_FUNC(cellSysutilAvconfExt, cellVideoOutSetCopyControl);
-	REG_FUNC(cellSysutilAvconfExt, cellVideoOutConfigure2);
-	REG_FUNC(cellSysutilAvconfExt, cellAudioOutGetConfiguration2);
-	REG_FUNC(cellSysutilAvconfExt, cellAudioOutConfigure2);
-	REG_FUNC(cellSysutilAvconfExt, cellVideoOutGetResolutionAvailability2);
 });

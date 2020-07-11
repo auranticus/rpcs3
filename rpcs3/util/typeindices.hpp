@@ -112,21 +112,16 @@ namespace stx
 
 	// Global typecounter instance
 	template <typename Info>
-	auto& typelist()
-	{
-		static type_counter<Info> typelist_v;
-		return typelist_v;
-	}
+	inline type_counter<Info> typelist_v{};
 
 	template <typename Info>
 	type_info<Info>::type_info(Info info, decltype(sizeof(int))) noexcept
 		: Info(info)
-		, type(typelist<Info>().count())
+		, type(typelist_v<Info>.count())
 	{
 		// Update linked list
-		auto& tl = typelist<Info>();
-		tl.next->next = this;
-		tl.next       = this;
+		typelist_v<Info>.next->next = this;
+		typelist_v<Info>.next       = this;
 	}
 
 	// Type index accessor

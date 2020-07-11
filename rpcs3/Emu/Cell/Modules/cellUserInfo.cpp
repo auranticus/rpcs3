@@ -1,6 +1,5 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Emu/System.h"
-#include "Emu/VFS.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "cellUserInfo.h"
@@ -33,8 +32,7 @@ error_code cellUserInfoGetStat(u32 id, vm::ptr<CellUserInfoUserStat> stat)
 
 	if (id > CELL_SYSUTIL_USERID_MAX)
 	{
-		// ****** sysutil userinfo parameter error : 1 ******
-		return {CELL_USERINFO_ERROR_PARAM, "1"};
+		return CELL_USERINFO_ERROR_NOUSER;
 	}
 
 	if (id == CELL_SYSUTIL_USERID_CURRENT)
@@ -42,6 +40,9 @@ error_code cellUserInfoGetStat(u32 id, vm::ptr<CellUserInfoUserStat> stat)
 		// We want the int value, not the string.
 		id = Emu.GetUsrId();
 	}
+
+	if (!stat)
+		return CELL_USERINFO_ERROR_PARAM;
 
 	const std::string& path = vfs::get(fmt::format("/dev_hdd0/home/%08d/", id));
 
@@ -55,15 +56,12 @@ error_code cellUserInfoGetStat(u32 id, vm::ptr<CellUserInfoUserStat> stat)
 
 	if (!f)
 	{
-		cellUserInfo.error("cellUserInfoGetStat(): CELL_USERINFO_ERROR_INTERNAL. Username for user %08u doesn't exist. Did you delete the username file?", id);
+		cellUserInfo.error("cellUserInfoGetStat(): CELL_USERINFO_ERROR_INTERNAL. Username for user %d doesn't exist. Did you delete the username file?", id);
 		return CELL_USERINFO_ERROR_INTERNAL;
 	}
 
-	if (stat)
-	{
-		stat->id = id;
-		strcpy_trunc(stat->name, f.to_string());
-	}
+	stat->id = id;
+	strcpy_trunc(stat->name, f.to_string());
 
 	return CELL_OK;
 }
@@ -106,12 +104,9 @@ error_code cellUserInfoGetList(vm::ptr<u32> listNum, vm::ptr<CellUserInfoUserLis
 	cellUserInfo.todo("cellUserInfoGetList(listNum=*0x%x, listBuf=*0x%x, currentUserId=*0x%x)", listNum, listBuf, currentUserId);
 
 	// If only listNum is NULL, an error will be returned
-	if (!listNum)
+	if (listBuf && !listNum)
 	{
-		if (listBuf || !currentUserId)
-		{
-			return CELL_USERINFO_ERROR_PARAM;
-		}
+		return CELL_USERINFO_ERROR_PARAM;
 	}
 
 	if (listNum)
@@ -121,10 +116,7 @@ error_code cellUserInfoGetList(vm::ptr<u32> listNum, vm::ptr<CellUserInfoUserLis
 
 	if (listBuf)
 	{
-		std::memset(listBuf.get_ptr(), 0, listBuf.size());
-
-		// We report only one user, so it must be the current user
-		listBuf->userId[0] = Emu.GetUsrId();
+		listBuf->userId[0] = 1;
 	}
 
 	if (currentUserId)

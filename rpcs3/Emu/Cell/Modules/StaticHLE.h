@@ -11,7 +11,7 @@ struct shle_pattern
 	u8 crc16_length;
 	u16 crc16;
 	u16 total_length;
-	std::string _module;
+	std::string module;
 	std::string name;
 
 	u32 fnid;

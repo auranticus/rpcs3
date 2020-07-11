@@ -226,7 +226,7 @@ QLabel#color_button {
 	background: transparent;
 }
 
-/* Search bar on main toolbar */
+/* Seachbar on main toolbar */
 QLineEdit#mw_searchbar { 
 	margin-left: 0.7em; 
 	color: #ecf0f1;

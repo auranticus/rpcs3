@@ -1,18 +1,17 @@
 ﻿#pragma once
 
-#include "util/logs.hpp"
+#include "Utilities/Log.h"
 
 /**
  * Ring buffer memory helper :
- * There are 2 "pointers" (offset inside a memory buffer to be provided by class derivative)
+ * There are 2 "pointers" (offset inside a memory buffer to be provided by class derrivative)
  * PUT pointer "points" to the start of allocatable space.
  * GET pointer "points" to the start of memory in use by the GPU.
  * Space between GET and PUT is used by the GPU ; this structure check that this memory is not overwritten.
  * User has to update the GET pointer when synchronisation happens.
  */
-class data_heap
+struct data_heap
 {
-protected:
 	/**
 	* Does alloc cross get position ?
 	*/
@@ -42,13 +41,6 @@ protected:
 				return false;
 			return true;
 		}
-	}
-
-    // Grow the buffer to hold at least size bytes
-	virtual bool grow(size_t /*size*/)
-	{
-		// Stub
-		return false;
 	}
 
 	size_t m_size;
@@ -83,14 +75,14 @@ public:
 	template<int Alignment>
 	size_t alloc(size_t size)
 	{
-		const size_t alloc_size = align(size, Alignment);
-		const size_t aligned_put_pos = align(m_put_pos, Alignment);
-
-		if (!can_alloc<Alignment>(size) && !grow(aligned_put_pos + alloc_size))
+		if (!can_alloc<Alignment>(size))
 		{
 			fmt::throw_exception("[%s] Working buffer not big enough, buffer_length=%d allocated=%d requested=%d guard=%d largest_pool=%d" HERE,
 					m_name, m_size, m_current_allocated_size, size, m_min_guard_size, m_largest_allocated_pool);
 		}
+
+		size_t alloc_size = align(size, Alignment);
+		size_t aligned_put_pos = align(m_put_pos, Alignment);
 
 		const size_t block_length = (aligned_put_pos - m_put_pos) + alloc_size;
 		m_current_allocated_size += block_length;
@@ -115,8 +107,8 @@ public:
 	{
 		return (m_put_pos > 0) ? m_put_pos - 1 : m_size - 1;
 	}
-
-	virtual bool is_critical() const
+	
+	bool is_critical() const
 	{
 		const size_t guard_length = std::max(m_min_guard_size, m_largest_allocated_pool);
 		return (m_current_allocated_size + guard_length) >= m_size;

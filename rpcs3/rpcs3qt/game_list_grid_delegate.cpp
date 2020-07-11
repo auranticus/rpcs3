@@ -20,16 +20,15 @@ void game_list_grid_delegate::initStyleOption(QStyleOptionViewItem * option, con
 	QStyledItemDelegate::initStyleOption(option, QModelIndex());
 }
 
-void game_list_grid_delegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const
+void game_list_grid_delegate::paint(QPainter * painter, const QStyleOptionViewItem & option, const QModelIndex & index) const
 {
 	QRect r = option.rect;
 
-	painter->setRenderHints(QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
 	painter->eraseRect(r);
 
 	// Get title and image
 	QPixmap image = qvariant_cast<QPixmap>(index.data(Qt::DecorationRole));
-	const QString title = index.data(Qt::DisplayRole).toString();
+	QString title = index.data(Qt::DisplayRole).toString();
 
 	// Paint from our stylesheet
 	QStyledItemDelegate::paint(painter, option, index);
@@ -40,9 +39,9 @@ void game_list_grid_delegate::paint(QPainter *painter, const QStyleOptionViewIte
 		painter->drawPixmap(option.rect, image);
 	}
 
-	const int h = r.height() / (1 + m_margin_factor + m_margin_factor * m_text_factor);
-	const int height = r.height() - h - h * m_margin_factor;
-	const int top = r.bottom() - height;
+	int h = r.height() / (1 + m_margin_factor + m_margin_factor*m_text_factor);
+	int height = r.height() - h - h * m_margin_factor;
+	int top = r.bottom() - height;
 
 	// title
 	if (option.state & QStyle::State_Selected)

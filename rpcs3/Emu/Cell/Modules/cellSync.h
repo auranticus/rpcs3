@@ -48,7 +48,7 @@ struct CellSyncMutex
 
 		bool try_lock()
 		{
-			if (rel != acq) [[unlikely]]
+			if (UNLIKELY(rel != acq))
 			{
 				return false;
 			}

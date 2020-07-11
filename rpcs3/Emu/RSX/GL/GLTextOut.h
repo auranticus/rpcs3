@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "stdafx.h"
 #include "GLHelpers.h"
@@ -52,16 +52,18 @@ namespace gl
 				"}\n"
 			};
 
-			m_fs.create(::glsl::program_domain::glsl_fragment_program, fs);
+			m_fs.create(gl::glsl::shader::type::fragment);
+			m_fs.source(fs);
 			m_fs.compile();
 
-			m_vs.create(::glsl::program_domain::glsl_vertex_program, vs);
+			m_vs.create(gl::glsl::shader::type::vertex);
+			m_vs.source(vs);
 			m_vs.compile();
 
 			m_program.create();
 			m_program.attach(m_vs);
 			m_program.attach(m_fs);
-			m_program.link();
+			m_program.make();
 		}
 
 		void load_program(float scale_x, float scale_y, float *offsets, size_t nb_offsets, color4f color)
@@ -71,7 +73,7 @@ namespace gl
 			m_program.use();
 
 			m_program.uniforms["draw_color"] = color;
-			glProgramUniform2fv(m_program.id(), m_program.uniforms["offsets"].location(), static_cast<GLsizei>(nb_offsets), offsets);
+			glProgramUniform2fv(m_program.id(), m_program.uniforms["offsets"].location(), (GLsizei)nb_offsets, offsets);
 			glProgramUniform2fv(m_program.id(), m_program.uniforms["scale"].location(), 1, scale);
 		}
 
@@ -139,8 +141,9 @@ namespace gl
 			float base_offset = 0.f;
 			shader_offsets.reserve(text.length() * 2);
 
-			while (u8 offset = static_cast<u8>(*s))
+			while (*s)
 			{
+				u8 offset = (u8)*s;
 				bool to_draw = false;	//Can be false for space or unsupported characters
 
 				auto o = m_offsets.find(offset);
@@ -180,7 +183,7 @@ namespace gl
 
 			m_vao.bind();
 
-			glMultiDrawArrays(GL_POINTS, offsets.data(), counts.data(), static_cast<GLsizei>(counts.size()));
+			glMultiDrawArrays(GL_POINTS, (const GLint*)offsets.data(), (const GLsizei*)counts.data(), (GLsizei)counts.size());
 			glBindVertexArray(old_vao);
 		}
 

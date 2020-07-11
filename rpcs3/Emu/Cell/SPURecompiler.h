@@ -1,8 +1,9 @@
 #pragma once
 
 #include "Utilities/File.h"
+#include "Utilities/mutex.h"
+#include "Utilities/cond.h"
 #include "Utilities/JIT.h"
-#include "Utilities/lockless.h"
 #include "SPUThread.h"
 #include <vector>
 #include <bitset>
@@ -16,8 +17,6 @@ class spu_cache
 	fs::file m_file;
 
 public:
-	spu_cache() = default;
-
 	spu_cache(const std::string& loc);
 
 	spu_cache(spu_cache&&) noexcept = default;
@@ -31,69 +30,44 @@ public:
 		return m_file.operator bool();
 	}
 
-	std::deque<struct spu_program> get();
+	std::deque<std::vector<u32>> get();
 
-	void add(const struct spu_program& func);
+	void add(const std::vector<u32>& func);
 
 	static void initialize();
-};
-
-struct spu_program
-{
-	// Address of the entry point in LS
-	u32 entry_point;
-
-	// Address of the data in LS
-	u32 lower_bound;
-
-	// Program data with intentionally wrong endianness (on LE platform opcode values are swapped)
-	std::vector<u32> data;
-
-	bool operator==(const spu_program& rhs) const noexcept;
-
-	bool operator!=(const spu_program& rhs) const noexcept
-	{
-		return !(*this == rhs);
-	}
-
-	bool operator<(const spu_program& rhs) const noexcept;
-};
-
-class spu_item
-{
-public:
-	// SPU program
-	const spu_program data;
-
-	// Compiled function pointer
-	atomic_t<spu_function_t> compiled = nullptr;
-
-	// Ubertrampoline generated for this item when it was latest
-	atomic_t<spu_function_t> trampoline = nullptr;
-
-	atomic_t<u8> cached = false;
-	atomic_t<u8> logged = false;
-
-	spu_item(spu_program&& data)
-		: data(std::move(data))
-	{
-	}
-
-	spu_item(const spu_item&) = delete;
-
-	spu_item& operator=(const spu_item&) = delete;
 };
 
 // Helper class
 class spu_runtime
 {
-	// All functions (2^20 bunches)
-	std::array<lf_bunch<spu_item>, (1 << 20)> m_stuff;
+	mutable shared_mutex m_mutex;
+
+	mutable cond_variable m_cond;
+
+	mutable atomic_t<u64> m_passive_locks{0};
+
+	atomic_t<u64> m_reset_count{0};
+
+	struct func_compare
+	{
+		// Comparison function for SPU programs
+		bool operator()(const std::vector<u32>& lhs, const std::vector<u32>& rhs) const;
+	};
+
+	// All functions
+	std::map<std::vector<u32>, spu_function_t, func_compare> m_map;
+
+	// All functions as PIC
+	std::map<std::basic_string_view<u32>, spu_function_t> m_pic_map;
 
 	// Debug module output location
 	std::string m_cache_path;
 
+	// Scratch vector
+	std::vector<std::pair<std::basic_string_view<u32>, spu_function_t>> m_flat_list;
+
 public:
+
 	// Trampoline to spu_recompiler_base::dispatch
 	static const spu_function_t tr_dispatch;
 
@@ -118,21 +92,35 @@ public:
 		return m_cache_path;
 	}
 
-	// Rebuild ubertrampoline for given identifier (first instruction)
-	spu_function_t rebuild_ubertrampoline(u32 id_inst);
+	// Add compiled function and generate trampoline if necessary
+	bool add(u64 last_reset_count, void* where, spu_function_t compiled);
 
 private:
-	friend class spu_cache;
+	spu_function_t rebuild_ubertrampoline(u32 id_inst);
 
+	friend class spu_cache;
 public:
-	// Return new pointer for add()
-	spu_item* add_empty(spu_program&&);
+
+	// Return opaque pointer for add()
+	void* find(u64 last_reset_count, const std::vector<u32>&);
 
 	// Find existing function
 	spu_function_t find(const u32* ls, u32 addr) const;
 
 	// Generate a patchable trampoline to spu_recompiler_base::branch
-	spu_function_t make_branch_patchpoint(u16 data = 0) const;
+	spu_function_t make_branch_patchpoint() const;
+
+	// reset() arg retriever, for race avoidance (can result in double reset)
+	u64 get_reset_count() const
+	{
+		return m_reset_count.load();
+	}
+
+	// Remove all compiled function and free JIT memory
+	u64 reset(std::size_t last_reset_count);
+
+	// Handle cpu_flag::jit_return
+	void handle_return(spu_thread* _spu);
 
 	// All dispatchers (array allocated in jit memory)
 	static std::array<atomic_t<spu_function_t>, (1 << 20)>* const g_dispatcher;
@@ -146,11 +134,75 @@ public:
 	// Similar to g_escape, but doing tail call to the new function.
 	static void(*const g_tail_escape)(spu_thread*, spu_function_t, u8*);
 
-	// Interpreter table (spu_itype -> ptr)
-	static std::array<u64, 256> g_interpreter_table;
-
 	// Interpreter entry point
 	static spu_function_t g_interpreter;
+
+	struct passive_lock
+	{
+		spu_runtime& _this;
+
+		passive_lock(const passive_lock&) = delete;
+
+		passive_lock(spu_runtime& _this)
+			: _this(_this)
+		{
+			std::lock_guard lock(_this.m_mutex);
+			_this.m_passive_locks++;
+		}
+
+		~passive_lock()
+		{
+			_this.m_passive_locks--;
+		}
+	};
+
+	// Exclusive lock within passive_lock scope
+	struct writer_lock
+	{
+		spu_runtime& _this;
+		bool notify = false;
+
+		writer_lock(const writer_lock&) = delete;
+
+		writer_lock(spu_runtime& _this)
+			: _this(_this)
+		{
+			// Temporarily release the passive lock
+			_this.m_passive_locks--;
+			_this.m_mutex.lock();
+		}
+
+		~writer_lock()
+		{
+			_this.m_passive_locks++;
+			_this.m_mutex.unlock();
+
+			if (notify)
+			{
+				_this.m_cond.notify_all();
+			}
+		}
+	};
+
+	struct reader_lock
+	{
+		const spu_runtime& _this;
+
+		reader_lock(const reader_lock&) = delete;
+
+		reader_lock(const spu_runtime& _this)
+			: _this(_this)
+		{
+			_this.m_passive_locks--;
+			_this.m_mutex.lock_shared();
+		}
+
+		~reader_lock()
+		{
+			_this.m_passive_locks++;
+			_this.m_mutex.unlock_shared();
+		}
+	};
 };
 
 // SPU Recompiler instance base class
@@ -189,7 +241,6 @@ protected:
 
 	u32 m_pos;
 	u32 m_size;
-	u64 m_hash_start;
 
 	// Bit indicating start of the block
 	std::bitset<0x10000> m_block_info;
@@ -300,6 +351,9 @@ private:
 	// For private use
 	std::vector<u32> workload;
 
+	// Result of analyse(), to avoid copying and allocation
+	std::vector<u32> result;
+
 public:
 	spu_recompiler_base();
 
@@ -308,8 +362,11 @@ public:
 	// Initialize
 	virtual void init() = 0;
 
-	// Compile function
-	virtual spu_function_t compile(spu_program&&) = 0;
+	// Compile function (may fail)
+	virtual spu_function_t compile(u64 last_reset_count, const std::vector<u32>&) = 0;
+
+	// Compile function, handle failure
+	void make_function(const std::vector<u32>&);
 
 	// Default dispatch function fallback (second arg is unused)
 	static void dispatch(spu_thread&, void*, u8* rip);
@@ -321,10 +378,10 @@ public:
 	static void old_interpreter(spu_thread&, void* ls, u8*);
 
 	// Get the function data at specified address
-	spu_program analyse(const be_t<u32>* ls, u32 lsa);
+	const std::vector<u32>& analyse(const be_t<u32>* ls, u32 lsa);
 
 	// Print analyser internal state
-	void dump(const spu_program& result, std::string& out);
+	void dump(std::string& out);
 
 	// Get SPU Runtime
 	spu_runtime& get_runtime()
@@ -342,7 +399,4 @@ public:
 
 	// Create recompiler instance (LLVM)
 	static std::unique_ptr<spu_recompiler_base> make_llvm_recompiler(u8 magn = 0);
-
-	// Create recompiler instance (interpreter-based LLVM)
-	static std::unique_ptr<spu_recompiler_base> make_fast_llvm_recompiler();
 };

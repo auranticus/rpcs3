@@ -1,12 +1,11 @@
-﻿#pragma once
+#pragma once
 
 #include "stdafx.h"
+#include "Emu/CPU/CPUDisAsm.h"
+
+#include "breakpoint_handler.h"
 
 #include <QListWidget>
-
-class CPUDisAsm;
-class cpu_thread;
-class breakpoint_handler;
 
 class breakpoint_list : public QListWidget
 {
@@ -22,7 +21,7 @@ public:
 	QColor m_text_color_bp;
 	QColor m_color_bp;
 Q_SIGNALS:
-	void RequestShowAddress(u32 addr, bool force = false);
+	void RequestShowAddress(u32 addr);
 public Q_SLOTS:
 	void HandleBreakpointRequest(u32 addr);
 private Q_SLOTS:

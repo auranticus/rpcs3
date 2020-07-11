@@ -12,6 +12,7 @@
 #include <chrono>
 
 #include "Utilities/mutex.h"
+#include "Emu/System.h"
 #include "GLRenderTargets.h"
 #include "GLOverlays.h"
 #include "GLTexture.h"
@@ -25,7 +26,7 @@ namespace gl
 	class blitter;
 
 	extern GLenum get_sized_internal_format(u32);
-	extern void copy_typeless(texture*, const texture*, const coord3u&, const coord3u&);
+	extern void copy_typeless(texture*, const texture*);
 	extern blitter *g_hw_blitter;
 
 	class cached_texture_section;
@@ -49,7 +50,8 @@ namespace gl
 		friend baseclass;
 
 		fence m_fence;
-		buffer pbo;
+		u32 pbo_id = 0;
+		u32 pbo_size = 0;
 
 		gl::viewable_image* vram_texture = nullptr;
 
@@ -64,16 +66,23 @@ namespace gl
 			const u32 vram_size = src->pitch() * src->height();
 			const u32 buffer_size = align(vram_size, 4096);
 
-			if (pbo)
+			if (pbo_id)
 			{
-				if (pbo.size() >= buffer_size)
+				if (pbo_size >= buffer_size)
 					return;
 
-				pbo.remove();
+				glDeleteBuffers(1, &pbo_id);
+				pbo_id = 0;
+				pbo_size = 0;
 			}
 
-			pbo.create(buffer::target::pixel_pack, buffer_size, nullptr, buffer::memory_type::host_visible, GL_STREAM_READ);
+			glGenBuffers(1, &pbo_id);
+
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);
+			glBufferStorage(GL_PIXEL_PACK_BUFFER, buffer_size, nullptr, GL_MAP_READ_BIT);
 			glBindBuffer(GL_PIXEL_PACK_BUFFER, GL_NONE);
+
+			pbo_size = buffer_size;
 		}
 
 	public:
@@ -143,23 +152,23 @@ namespace gl
 			}
 		}
 
-		void dma_transfer(gl::command_context& /*cmd*/, gl::texture* src, const areai& /*src_area*/, const utils::address_range& /*valid_range*/, u32 pitch)
+		void dma_transfer(gl::command_context& cmd, gl::texture* src, const areai& /*src_area*/, const utils::address_range& /*valid_range*/, u32 pitch)
 		{
 			init_buffer(src);
 
 			glGetError();
-			pbo.bind(buffer::target::pixel_pack);
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);
 
 			if (context == rsx::texture_upload_context::dma)
 			{
 				// Determine unpack config dynamically
 				const auto format_info = gl::get_format_type(src->get_internal_format());
-				format = static_cast<gl::texture::format>(format_info.format);
-				type = static_cast<gl::texture::type>(format_info.type);
+				format = static_cast<gl::texture::format>(std::get<0>(format_info));
+				type = static_cast<gl::texture::type>(std::get<1>(format_info));
 
 				if ((src->aspect() & gl::image_aspect::stencil) == 0)
 				{
-					pack_unpack_swap_bytes = format_info.swap_bytes;
+					pack_unpack_swap_bytes = std::get<2>(format_info);
 				}
 				else
 				{
@@ -183,11 +192,11 @@ namespace gl
 					// AMD driver bug
 					// Pixel transfer fails with GL_OUT_OF_MEMORY. Usually happens with float textures or operations attempting to swap endianness.
 					// Failed operations also leak a large amount of memory
-					rsx_log.error("Memory transfer failure (AMD bug). Please update your driver to Adrenalin 19.4.3 or newer. Format=0x%x, Type=0x%x, Swap=%d", static_cast<u32>(format), static_cast<u32>(type), pack_unpack_swap_bytes);
+					LOG_ERROR(RSX, "Memory transfer failure (AMD bug). Please update your driver to Adrenalin 19.4.3 or newer. Format=0x%x, Type=0x%x, Swap=%d", (u32)format, (u32)type, pack_unpack_swap_bytes);
 				}
 				else
 				{
-					rsx_log.error("Memory transfer failed with error 0x%x. Format=0x%x, Type=0x%x", error, static_cast<u32>(format), static_cast<u32>(type));
+					LOG_ERROR(RSX, "Memory transfer failed with error 0x%x. Format=0x%x, Type=0x%x", error, (u32)format, (u32)type);
 				}
 			}
 
@@ -202,7 +211,7 @@ namespace gl
 		{
 			ASSERT(exists());
 
-			if (!miss) [[likely]]
+			if (LIKELY(!miss))
 			{
 				baseclass::on_speculative_flush();
 			}
@@ -232,7 +241,7 @@ namespace gl
 				}
 
 				areai src_area = { 0, 0, 0, 0 };
-				const areai dst_area = { 0, 0, static_cast<s32>(real_width), static_cast<s32>(real_height) };
+				const areai dst_area = { 0, 0, (s32)real_width, (s32)real_height };
 
 				auto ifmt = vram_texture->get_internal_format();
 				src_area.x2 = vram_texture->width();
@@ -254,17 +263,37 @@ namespace gl
 
 					if (!scaled_texture)
 					{
-						scaled_texture = std::make_unique<gl::texture>(GL_TEXTURE_2D, real_width, real_height, 1, 1, static_cast<GLenum>(ifmt));
+						scaled_texture = std::make_unique<gl::texture>(GL_TEXTURE_2D, real_width, real_height, 1, 1, (GLenum)ifmt);
 					}
 
-					const bool linear_interp = is_depth_texture() ? false : true;
-					g_hw_blitter->scale_image(cmd, vram_texture, scaled_texture.get(), src_area, dst_area, linear_interp, {});
+					const bool is_depth = is_depth_texture();
+					const bool linear_interp = is_depth? false : true;
+					g_hw_blitter->scale_image(cmd, vram_texture, scaled_texture.get(), src_area, dst_area, linear_interp, is_depth, {});
 					target_texture = scaled_texture.get();
 				}
 			}
 
 			dma_transfer(cmd, target_texture, {}, {}, rsx_pitch);
 		}
+
+		void fill_texture(gl::texture* tex)
+		{
+			if (!synchronized)
+			{
+				//LOG_WARNING(RSX, "Request to fill texture rejected because contents were not read");
+				return;
+			}
+
+			u32 min_width = std::min((u16)tex->width(), width);
+			u32 min_height = std::min((u16)tex->height(), height);
+
+			glBindTexture(GL_TEXTURE_2D, tex->id());
+			glPixelStorei(GL_UNPACK_SWAP_BYTES, pack_unpack_swap_bytes);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id);
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, min_width, min_height, (GLenum)format, (GLenum)type, nullptr);
+			glBindBuffer(GL_PIXEL_UNPACK_BUFFER, GL_NONE);
+		}
+
 
 		/**
 		 * Flush
@@ -275,9 +304,8 @@ namespace gl
 
 			m_fence.wait_for_signal();
 
-			verify(HERE), (offset + size) <= pbo.size();
-			pbo.bind(buffer::target::pixel_pack);
-
+			verify(HERE), (offset + size) <= pbo_size;
+			glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo_id);
 			return glMapBufferRange(GL_PIXEL_PACK_BUFFER, offset, size, GL_MAP_READ_BIT);
 		}
 
@@ -312,7 +340,7 @@ namespace gl
 				{
 					verify(HERE), pack_unpack_swap_bytes == false;
 					verify(HERE), real_pitch == (width * 4);
-					if (rsx_pitch == real_pitch) [[likely]]
+					if (LIKELY(rsx_pitch == real_pitch))
 					{
 						rsx::convert_le_d24x8_to_be_d24x8(dst, dst, valid_length / 4, 1);
 					}
@@ -345,19 +373,21 @@ namespace gl
 		 */
 		void destroy()
 		{
-			if (!is_locked() && !pbo && vram_texture == nullptr && m_fence.is_empty() && !managed_texture)
+			if (!is_locked() && pbo_id == 0 && vram_texture == nullptr && m_fence.is_empty() && !managed_texture)
 				//Already destroyed
 				return;
 
-			if (pbo)
+			if (pbo_id != 0)
 			{
-				// Destroy pbo cache since vram texture is managed elsewhere
-				pbo.remove();
+				//Destroy pbo cache since vram texture is managed elsewhere
+				glDeleteBuffers(1, &pbo_id);
 				scaled_texture.reset();
 			}
-
 			managed_texture.reset();
+
 			vram_texture = nullptr;
+			pbo_id = 0;
+			pbo_size = 0;
 
 			if (!m_fence.is_empty())
 			{
@@ -485,7 +515,7 @@ namespace gl
 		}
 
 		gl::texture_view* create_temporary_subresource_impl(gl::command_context& cmd, gl::texture* src, GLenum sized_internal_fmt, GLenum dst_type, u32 gcm_format,
-				u16 x, u16 y, u16 width, u16 height, const rsx::texture_channel_remap_t& remap, bool copy)
+				u16 x, u16 y, u16 width, u16 height, const texture_channel_remap_t& remap, bool copy)
 		{
 			if (sized_internal_fmt == GL_NONE)
 			{
@@ -499,8 +529,7 @@ namespace gl
 				std::vector<copy_region_descriptor> region =
 				{{
 					src,
-					rsx::surface_transform::coordinate_transform,
-					0,
+					surface_transform::coordinate_transform,
 					x, y, 0, 0, 0,
 					width, height, width, height
 				}};
@@ -509,7 +538,7 @@ namespace gl
 			}
 
 			std::array<GLenum, 4> swizzle;
-			if (!src || static_cast<GLenum>(src->get_internal_format()) != sized_internal_fmt)
+			if (!src || (GLenum)src->get_internal_format() != sized_internal_fmt)
 			{
 				// Apply base component map onto the new texture if a data cast has been done
 				swizzle = get_component_mapping(gcm_format, rsx::texture_create_flags::default_component_order);
@@ -574,7 +603,7 @@ namespace gl
 					continue;
 
 				const bool typeless = dst_aspect != slice.src->aspect() ||
-					!formats_are_bitcast_compatible(static_cast<GLenum>(slice.src->get_internal_format()), static_cast<GLenum>(dst_image->get_internal_format()));
+					!formats_are_bitcast_compatible((GLenum)slice.src->get_internal_format(), (GLenum)dst_image->get_internal_format());
 
 				std::unique_ptr<gl::texture> tmp;
 				auto src_image = slice.src;
@@ -583,12 +612,12 @@ namespace gl
 				auto src_w = slice.src_w;
 				auto src_h = slice.src_h;
 
-				if (slice.xform == rsx::surface_transform::coordinate_transform)
+				if (slice.xform == surface_transform::coordinate_transform)
 				{
 					// Dimensions were given in 'dst' space. Work out the real source coordinates
 					const auto src_bpp = slice.src->pitch() / slice.src->width();
 					src_x = (src_x * dst_bpp) / src_bpp;
-					src_w = ::aligned_div<u16>(src_w * dst_bpp, src_bpp);
+					src_w = (src_w * dst_bpp) / src_bpp;
 				}
 
 				if (auto surface = dynamic_cast<gl::render_target*>(slice.src))
@@ -596,41 +625,24 @@ namespace gl
 					surface->transform_samples_to_pixels(src_x, src_w, src_y, src_h);
 				}
 
-				if (typeless) [[unlikely]]
+				if (UNLIKELY(typeless))
 				{
 					const auto src_bpp = slice.src->pitch() / slice.src->width();
 					const u16 convert_w = u16(slice.src->width() * src_bpp) / dst_bpp;
-					tmp = std::make_unique<texture>(GL_TEXTURE_2D, convert_w, slice.src->height(), 1, 1, static_cast<GLenum>(dst_image->get_internal_format()));
+					tmp = std::make_unique<texture>(GL_TEXTURE_2D, convert_w, slice.src->height(), 1, 1, (GLenum)dst_image->get_internal_format());
 
 					src_image = tmp.get();
+					gl::copy_typeless(src_image, slice.src);
 
 					// Compute src region in dst format layout
-					const u16 src_w2 = u16(src_w * src_bpp) / dst_bpp;
-					const u16 src_x2 = u16(src_x * src_bpp) / dst_bpp;
-
-					if (src_w2 == slice.dst_w && src_h == slice.dst_h && slice.level == 0)
-					{
-						// Optimization, avoid typeless copy to tmp followed by data copy to dst
-						// Combine the two transfers into one
-						const coord3u src_region = { { src_x, src_y, 0 }, { src_w, src_h, 1 } };
-						const coord3u dst_region = { { slice.dst_x, slice.dst_y, slice.dst_z }, { slice.dst_w, slice.dst_h, 1 } };
-						gl::copy_typeless(dst_image, slice.src, dst_region, src_region);
-
-						continue;
-					}
-
-					const coord3u src_region = { { src_x, src_y, 0 }, { src_w, src_h, 1 } };
-					const coord3u dst_region = { { src_x2, src_y, 0 }, { src_w2, src_h, 1 } };
-					gl::copy_typeless(src_image, slice.src, dst_region, src_region);
-
-					src_x = src_x2;
-					src_w = src_w2;
+					src_x = u16(src_x * src_bpp) / dst_bpp;
+					src_w = u16(src_w * src_bpp) / dst_bpp;
 				}
 
 				if (src_w == slice.dst_w && src_h == slice.dst_h)
 				{
 					glCopyImageSubData(src_image->id(), GL_TEXTURE_2D, 0, src_x, src_y, 0,
-						dst_image->id(), static_cast<GLenum>(dst_image->get_target()), slice.level, slice.dst_x, slice.dst_y, slice.dst_z, src_w, src_h, 1);
+						dst_image->id(), (GLenum)dst_image->get_target(), 0, slice.dst_x, slice.dst_y, slice.dst_z, src_w, src_h, 1);
 				}
 				else
 				{
@@ -640,25 +652,22 @@ namespace gl
 					const areai src_rect = { src_x, src_y, src_x + src_w, src_y + src_h };
 					const areai dst_rect = { slice.dst_x, slice.dst_y, slice.dst_x + slice.dst_w, slice.dst_y + slice.dst_h };
 
-					gl::texture* _dst;
-					if (src_image->get_internal_format() == dst_image->get_internal_format() && slice.level == 0)
+					auto _dst = dst_image;
+					if (UNLIKELY(src_image->get_internal_format() != dst_image->get_internal_format()))
 					{
-						_dst = dst_image;
-					}
-					else
-					{
-						tmp = std::make_unique<texture>(GL_TEXTURE_2D, dst_rect.x2, dst_rect.y2, 1, 1, static_cast<GLenum>(slice.src->get_internal_format()));
+						verify(HERE), !typeless;
+						tmp = std::make_unique<texture>(GL_TEXTURE_2D, dst_rect.x2, dst_rect.y2, 1, 1, (GLenum)slice.src->get_internal_format());
 						_dst = tmp.get();
 					}
 
 					_blitter->scale_image(cmd, src_image, _dst,
-						src_rect, dst_rect, false, {});
+						src_rect, dst_rect, false, false, {});
 
 					if (_dst != dst_image)
 					{
 						// Data cast comes after scaling
 						glCopyImageSubData(tmp->id(), GL_TEXTURE_2D, 0, slice.dst_x, slice.dst_y, 0,
-							dst_image->id(), static_cast<GLenum>(dst_image->get_target()), slice.level, slice.dst_x, slice.dst_y, slice.dst_z, slice.dst_w, slice.dst_h, 1);
+							dst_image->id(), (GLenum)dst_image->get_target(), 0, slice.dst_x, slice.dst_y, slice.dst_z, slice.dst_w, slice.dst_h, 1);
 					}
 				}
 			}
@@ -666,7 +675,7 @@ namespace gl
 
 		gl::texture* get_template_from_collection_impl(const std::vector<copy_region_descriptor>& sections_to_transfer) const
 		{
-			if (sections_to_transfer.size() == 1) [[likely]]
+			if (LIKELY(sections_to_transfer.size() == 1))
 			{
 				return sections_to_transfer.front().src;
 			}
@@ -704,19 +713,19 @@ namespace gl
 	protected:
 
 		gl::texture_view* create_temporary_subresource_view(gl::command_context &cmd, gl::texture** src, u32 gcm_format, u16 x, u16 y, u16 w, u16 h,
-				const rsx::texture_channel_remap_t& remap_vector) override
+				const texture_channel_remap_t& remap_vector) override
 		{
 			return create_temporary_subresource_impl(cmd, *src, GL_NONE, GL_TEXTURE_2D, gcm_format, x, y, w, h, remap_vector, true);
 		}
 
 		gl::texture_view* create_temporary_subresource_view(gl::command_context &cmd, gl::texture* src, u32 gcm_format, u16 x, u16 y, u16 w, u16 h,
-				const rsx::texture_channel_remap_t& remap_vector) override
+				const texture_channel_remap_t& remap_vector) override
 		{
-			return create_temporary_subresource_impl(cmd, src, static_cast<GLenum>(src->get_internal_format()),
+			return create_temporary_subresource_impl(cmd, src, (GLenum)src->get_internal_format(),
 					GL_TEXTURE_2D, gcm_format, x, y, w, h, remap_vector, true);
 		}
 
-		gl::texture_view* generate_cubemap_from_images(gl::command_context& cmd, u32 gcm_format, u16 size, const std::vector<copy_region_descriptor>& sources, const rsx::texture_channel_remap_t& /*remap_vector*/) override
+		gl::texture_view* generate_cubemap_from_images(gl::command_context& cmd, u32 gcm_format, u16 size, const std::vector<copy_region_descriptor>& sources, const texture_channel_remap_t& /*remap_vector*/) override
 		{
 			const GLenum ifmt = gl::get_sized_internal_format(gcm_format);
 			std::unique_ptr<gl::texture> dst_image = std::make_unique<gl::viewable_image>(GL_TEXTURE_CUBE_MAP, size, size, 1, 1, ifmt);
@@ -729,7 +738,7 @@ namespace gl
 
 			if (GLenum err = glGetError())
 			{
-				rsx_log.warning("Failed to copy image subresource with GL error 0x%X", err);
+				LOG_WARNING(RSX, "Failed to copy image subresource with GL error 0x%X", err);
 				return nullptr;
 			}
 
@@ -738,7 +747,7 @@ namespace gl
 			return result;
 		}
 
-		gl::texture_view* generate_3d_from_2d_images(gl::command_context& cmd, u32 gcm_format, u16 width, u16 height, u16 depth, const std::vector<copy_region_descriptor>& sources, const rsx::texture_channel_remap_t& /*remap_vector*/) override
+		gl::texture_view* generate_3d_from_2d_images(gl::command_context& cmd, u32 gcm_format, u16 width, u16 height, u16 depth, const std::vector<copy_region_descriptor>& sources, const texture_channel_remap_t& /*remap_vector*/) override
 		{
 			const GLenum ifmt = gl::get_sized_internal_format(gcm_format);
 			std::unique_ptr<gl::texture> dst_image = std::make_unique<gl::viewable_image>(GL_TEXTURE_3D, width, height, depth, 1, ifmt);
@@ -751,7 +760,7 @@ namespace gl
 
 			if (GLenum err = glGetError())
 			{
-				rsx_log.warning("Failed to copy image subresource with GL error 0x%X", err);
+				LOG_WARNING(RSX, "Failed to copy image subresource with GL error 0x%X", err);
 				return nullptr;
 			}
 
@@ -761,7 +770,7 @@ namespace gl
 		}
 
 		gl::texture_view* generate_atlas_from_images(gl::command_context& cmd, u32 gcm_format, u16 width, u16 height, const std::vector<copy_region_descriptor>& sections_to_copy,
-				const rsx::texture_channel_remap_t& remap_vector) override
+				const texture_channel_remap_t& remap_vector) override
 		{
 			auto _template = get_template_from_collection_impl(sections_to_copy);
 			auto result = create_temporary_subresource_impl(cmd, _template, GL_NONE, GL_TEXTURE_2D, gcm_format, 0, 0, width, height, remap_vector, false);
@@ -770,46 +779,12 @@ namespace gl
 			return result;
 		}
 
-		gl::texture_view* generate_2d_mipmaps_from_images(gl::command_context& cmd, u32 /*gcm_format*/, u16 width, u16 height, const std::vector<copy_region_descriptor>& sections_to_copy,
-			const rsx::texture_channel_remap_t& remap_vector) override
-		{
-			const auto _template = sections_to_copy.front().src;
-			const GLenum ifmt = static_cast<GLenum>(_template->get_internal_format());
-			const u8 mipmaps = ::narrow<u8>(sections_to_copy.size());
-			const auto swizzle = _template->get_native_component_layout();
-
-			auto image_ptr = new gl::viewable_image(GL_TEXTURE_2D, width, height, 1, mipmaps, ifmt);
-			image_ptr->set_native_component_layout(swizzle);
-
-			copy_transfer_regions_impl(cmd, image_ptr, sections_to_copy);
-
-			auto view = image_ptr->get_view(get_remap_encoding(remap_vector), remap_vector);
-
-			std::unique_ptr<gl::texture> dst_image(image_ptr);
-			m_temporary_surfaces.emplace_back(dst_image);
-			return view;
-		}
-
-		void release_temporary_subresource(gl::texture_view* view) override
-		{
-			for (auto& e : m_temporary_surfaces)
-			{
-				if (e.image.get() == view->image())
-				{
-					e.view.reset();
-					e.image.reset();
-					return;
-				}
-			}
-		}
-
 		void update_image_contents(gl::command_context& cmd, gl::texture_view* dst, gl::texture* src, u16 width, u16 height) override
 		{
 			std::vector<copy_region_descriptor> region =
 			{{
 				src,
-				rsx::surface_transform::identity,
-				0,
+				surface_transform::identity,
 				0, 0, 0, 0, 0,
 				width, height, width, height
 			}};
@@ -883,7 +858,7 @@ namespace gl
 			return &cached;
 		}
 
-		cached_texture_section* create_nul_section(gl::command_context& /*cmd*/, const utils::address_range& rsx_range, bool /*memory_load*/) override
+		cached_texture_section* create_nul_section(gl::command_context& cmd, const utils::address_range& rsx_range, bool memory_load) override
 		{
 			auto& cached = *find_cached_texture(rsx_range, RSX_GCM_FORMAT_IGNORED, true, false);
 			ASSERT(!cached.is_locked());
@@ -942,7 +917,7 @@ namespace gl
 			{
 			default:
 				//TODO
-				warn_once("Format incompatibility detected, reporting failure to force data copy (GL_INTERNAL_FORMAT=0x%X, GCM_FORMAT=0x%X)", static_cast<u32>(ifmt), gcm_format);
+				warn_once("Format incompatibility detected, reporting failure to force data copy (GL_INTERNAL_FORMAT=0x%X, GCM_FORMAT=0x%X)", (u32)ifmt, gcm_format);
 				return false;
 			case CELL_GCM_TEXTURE_W16_Z16_Y16_X16_FLOAT:
 				return (ifmt == gl::texture::internal_format::rgba16f);
@@ -953,7 +928,6 @@ namespace gl
 			case CELL_GCM_TEXTURE_R5G6B5:
 				return (ifmt == gl::texture::internal_format::rgb565);
 			case CELL_GCM_TEXTURE_A8R8G8B8:
-			case CELL_GCM_TEXTURE_D8R8G8B8:
 				return (ifmt == gl::texture::internal_format::rgba8 ||
 						ifmt == gl::texture::internal_format::depth24_stencil8 ||
 						ifmt == gl::texture::internal_format::depth32f_stencil8);

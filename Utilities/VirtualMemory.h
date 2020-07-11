@@ -48,10 +48,9 @@ namespace utils
 		int m_file;
 #endif
 		u32 m_size;
-		u32 m_flags;
 
 	public:
-		explicit shm(u32 size, u32 flags = 0);
+		explicit shm(u32 size);
 
 		shm(const shm&) = delete;
 
@@ -74,12 +73,6 @@ namespace utils
 		u32 size() const
 		{
 			return m_size;
-		}
-
-		// Flags are unspecified, consider it userdata
-		u32 flags() const
-		{
-			return m_flags;
 		}
 	};
 }

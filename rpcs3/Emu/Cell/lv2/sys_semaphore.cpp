@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "sys_semaphore.h"
 
+#include "Emu/System.h"
 #include "Emu/IdManager.h"
 #include "Emu/IPC.h"
 
@@ -13,7 +14,7 @@ template<> DECLARE(ipc_manager<lv2_sema, u64>::g_ipc) {};
 
 error_code sys_semaphore_create(ppu_thread& ppu, vm::ptr<u32> sem_id, vm::ptr<sys_semaphore_attribute_t> attr, s32 initial_val, s32 max_val)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.warning("sys_semaphore_create(sem_id=*0x%x, attr=*0x%x, initial_val=%d, max_val=%d)", sem_id, attr, initial_val, max_val);
 
@@ -28,9 +29,7 @@ error_code sys_semaphore_create(ppu_thread& ppu, vm::ptr<u32> sem_id, vm::ptr<sy
 		return CELL_EINVAL;
 	}
 
-	const auto _attr = *attr;
-
-	const u32 protocol = _attr.protocol;
+	const u32 protocol = attr->protocol;
 
 	if (protocol != SYS_SYNC_FIFO && protocol != SYS_SYNC_PRIORITY)
 	{
@@ -38,9 +37,9 @@ error_code sys_semaphore_create(ppu_thread& ppu, vm::ptr<u32> sem_id, vm::ptr<sy
 		return CELL_EINVAL;
 	}
 
-	if (auto error = lv2_obj::create<lv2_sema>(_attr.pshared, _attr.ipc_key, _attr.flags, [&]
+	if (auto error = lv2_obj::create<lv2_sema>(attr->pshared, attr->ipc_key, attr->flags, [&]
 	{
-		return std::make_shared<lv2_sema>(protocol, _attr.pshared, _attr.ipc_key, _attr.flags, _attr.name_u64, max_val, initial_val);
+		return std::make_shared<lv2_sema>(protocol, attr->pshared, attr->ipc_key, attr->flags, attr->name_u64, max_val, initial_val);
 	}))
 	{
 		return error;
@@ -52,7 +51,7 @@ error_code sys_semaphore_create(ppu_thread& ppu, vm::ptr<u32> sem_id, vm::ptr<sy
 
 error_code sys_semaphore_destroy(ppu_thread& ppu, u32 sem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.warning("sys_semaphore_destroy(sem_id=0x%x)", sem_id);
 
@@ -81,7 +80,7 @@ error_code sys_semaphore_destroy(ppu_thread& ppu, u32 sem_id)
 
 error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.trace("sys_semaphore_wait(sem_id=0x%x, timeout=0x%llx)", sem_id, timeout);
 
@@ -132,17 +131,12 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 		{
 			if (lv2_obj::wait_timeout(timeout, &ppu))
 			{
-				// Wait for rescheduling
-				if (ppu.check_state())
-				{
-					return 0;
-				}
-
 				std::lock_guard lock(sem->mutex);
 
 				if (!sem->unqueue(sem->sq, &ppu))
 				{
-					break;
+					timeout = 0;
+					continue;
 				}
 
 				verify(HERE), 0 > sem->val.fetch_op([](s32& val)
@@ -168,7 +162,7 @@ error_code sys_semaphore_wait(ppu_thread& ppu, u32 sem_id, u64 timeout)
 
 error_code sys_semaphore_trywait(ppu_thread& ppu, u32 sem_id)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.trace("sys_semaphore_trywait(sem_id=0x%x)", sem_id);
 
@@ -192,7 +186,7 @@ error_code sys_semaphore_trywait(ppu_thread& ppu, u32 sem_id)
 
 error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.trace("sys_semaphore_post(sem_id=0x%x, count=%d)", sem_id, count);
 
@@ -229,18 +223,15 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 	{
 		std::lock_guard lock(sem->mutex);
 
-		const auto [val, ok] = sem->val.fetch_op([&](s32& val)
+		const s32 val = sem->val.fetch_op([=](s32& val)
 		{
-			if (count + 0u <= sem->max + 0u - val)
+			if (val + s64{count} <= sem->max)
 			{
 				val += count;
-				return true;
 			}
-
-			return false;
 		});
 
-		if (!ok)
+		if (val + s64{count} > sem->max)
 		{
 			return not_an_error(CELL_EBUSY);
 		}
@@ -264,25 +255,22 @@ error_code sys_semaphore_post(ppu_thread& ppu, u32 sem_id, s32 count)
 
 error_code sys_semaphore_get_value(ppu_thread& ppu, u32 sem_id, vm::ptr<s32> count)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_semaphore.trace("sys_semaphore_get_value(sem_id=0x%x, count=*0x%x)", sem_id, count);
-
-	const auto sema = idm::check<lv2_obj, lv2_sema>(sem_id, [](lv2_sema& sema)
-	{
-		return std::max<s32>(0, sema.val);
-	});
-
-	if (!sema)
-	{
-		return CELL_ESRCH;
-	}
 
 	if (!count)
 	{
 		return CELL_EFAULT;
 	}
 
-	*count = sema.ret;
+	if (!idm::check<lv2_obj, lv2_sema>(sem_id, [=](lv2_sema& sema)
+	{
+		*count = std::max<s32>(0, sema.val);
+	}))
+	{
+		return CELL_ESRCH;
+	}
+
 	return CELL_OK;
 }

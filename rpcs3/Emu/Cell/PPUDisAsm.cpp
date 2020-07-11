@@ -1,150 +1,14 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "PPUDisAsm.h"
 #include "PPUFunction.h"
 
-constexpr ppu_decoder<PPUDisAsm> s_ppu_disasm;
+const ppu_decoder<PPUDisAsm> s_ppu_disasm;
 
 u32 PPUDisAsm::disasm(u32 pc)
 {
-	const u32 op = *reinterpret_cast<const be_t<u32>*>(offset + pc);
+	const u32 op = *(be_t<u32>*)(offset + pc);
 	(this->*(s_ppu_disasm.decode(op)))({ op });
 	return 4;
-}
-
-constexpr std::pair<const char*, char> get_BC_info(u32 bo, u32 bi)
-{
-	std::pair<const char*, char> info{};
-
-	switch (bo)
-	{
-	case 0b00000:
-	case 0b00001:
-	{
-		info = {"bdnzf", 'f'}; break;
-	}
-	case 0b00010:
-	case 0b00011:
-	{
-		info = {"bdzf", 'f'}; break;
-	}
-	case 0b01000:
-	case 0b01001:
-	{
-		info = {"bdnzt", 't'}; break;
-	}
-	case 0b01010:
-	case 0b01011:
-	{
-		info = {"bdzt", 't'}; break;
-	}
-	case 0b10010:
-	{
-		info.first = "bdz"; break;
-	}
-	case 0b11010:
-	{
-		info = {"bdz", '-'}; break;
-	}
-	case 0b11011:
-	{
-		info = {"bdz", '+'}; break;
-	}
-	case 0b10000:
-	{
-		info.first = "bdnz"; break;
-	}
-	case 0b11000:
-	{
-		info = {"bdnz", '-'}; break;
-	}
-	case 0b11001:
-	{
-		info = {"bdnz", '+'}; break;
-	}
-	case 0b00100:
-	{
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "bge"; break;
-		case 0x1: info.first = "ble"; break;
-		case 0x2: info.first = "bne"; break;
-		case 0x3: info.first = "bns"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	case 0b00110:
-	{
-		info.second = '-';
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "bge"; break;
-		case 0x1: info.first = "ble"; break;
-		case 0x2: info.first = "bne"; break;
-		case 0x3: info.first = "bns"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	case 0b00111:
-	{
-		info.second = '+';
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "bge"; break;
-		case 0x1: info.first = "ble"; break;
-		case 0x2: info.first = "bne"; break;
-		case 0x3: info.first = "bns"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	case 0b01100:
-	{
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "blt"; break;
-		case 0x1: info.first = "bgt"; break;
-		case 0x2: info.first = "beq"; break;
-		case 0x3: info.first = "bso"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	case 0b01110:
-	{
-		info.second = '-';
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "blt"; break;
-		case 0x1: info.first = "bgt"; break;
-		case 0x2: info.first = "beq"; break;
-		case 0x3: info.first = "bso"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	case 0b01111:
-	{
-		info.second = '+';
-		switch (bi % 4)
-		{
-		case 0x0: info.first = "blt"; break;
-		case 0x1: info.first = "bgt"; break;
-		case 0x2: info.first = "beq"; break;
-		case 0x3: info.first = "bso"; break;
-		default: ASSUME(0); break;
-		}
-		break;
-	}
-	//case 0b10100:
-	//{
-	//	info.first = "b"; break;
-	//}
-	default: break;
-	}
-
-	return info;
 }
 
 void PPUDisAsm::MFVSCR(ppu_opcode_t op)
@@ -940,42 +804,109 @@ void PPUDisAsm::BC(ppu_opcode_t op)
 		return;
 	}
 
-	const auto [inst, sign] = get_BC_info(bo, bi);
+	const u8 bo0 = (bo & 0x10) ? 1 : 0;
+	const u8 bo1 = (bo & 0x08) ? 1 : 0;
+	const u8 bo2 = (bo & 0x04) ? 1 : 0;
+	const u8 bo3 = (bo & 0x02) ? 1 : 0;
+	const u8 bo4 = (bo & 0x01) ? 1 : 0;
 
-	if (!inst)
+	std::add_pointer_t<const char> inst{""}, sign = inst;
+
+	if (bo0 && !bo1 && !bo2 && bo3 && !bo4)
 	{
-		Write(fmt::format("bc 0x%x, 0x%x, 0x%x, %d, %d", bo, bi, bd, aa, lk));
-		return;
+		inst = "bdz";
 	}
-
-	std::string final = inst;
-	if (lk) final += 'l';
-	if (aa) final += 'a';
-	if (sign) final += sign;
-
-	// Check if need to display full BI value
-	if (sign == 't' || sign == 'f')
+	else if (bo0 && bo1 && !bo2 && bo3 && !bo4)
 	{
-		if (aa)
+		inst = "bdz", sign = "-";
+	}
+	else if (bo0 && bo1 && !bo2 && bo3 && bo4)
+	{
+		inst = "bdz", sign = "+";
+	}
+	else if (bo0 && !bo1 && !bo2 && !bo3 && !bo4)
+	{
+		inst = "bdnz";
+	}
+	else if (bo0 && bo1 && !bo2 && !bo3 && !bo4)
+	{
+		inst = "bdnz", sign = "-";
+	}
+	else if (bo0 && bo1 && !bo2 && !bo3 && bo4)
+	{
+		inst = "bdnz", sign = "+";
+	}
+	else if (!bo0 && !bo1 && bo2 && !bo3 && !bo4)
+	{
+		switch (bi % 4)
 		{
-			DisAsm_BI_BRANCH_A(final, bi, bd);
+		case 0x0: inst = "bge"; break;
+		case 0x1: inst = "ble"; break;
+		case 0x2: inst = "bne"; break;
+		case 0x3: inst = "bns"; break;
 		}
-		else
+	}
+	else if (!bo0 && !bo1 && bo2 && bo3 && !bo4)
+	{
+		sign = "-";
+		switch (bi % 4)
 		{
-			DisAsm_BI_BRANCH(final, bi, bd);
+		case 0x0: inst = "bge"; break;
+		case 0x1: inst = "ble"; break;
+		case 0x2: inst = "bne"; break;
+		case 0x3: inst = "bns"; break;
 		}
-
-		return;
 	}
-
-	if (aa)
+	else if (!bo0 && !bo1 && bo2 && bo3 && bo4)
 	{
-		DisAsm_CR_BRANCH_A(final, bi / 4, bd);
+		sign = "+";
+		switch (bi % 4)
+		{
+		case 0x0: inst = "bge"; break;
+		case 0x1: inst = "ble"; break;
+		case 0x2: inst = "bne"; break;
+		case 0x3: inst = "bns"; break;
+		}
 	}
-	else
+	else if (!bo0 && bo1 && bo2 && !bo3 && !bo4)
 	{
-		DisAsm_CR_BRANCH(final, bi / 4, bd);
+		switch (bi % 4)
+		{
+		case 0x0: inst = "blt"; break;
+		case 0x1: inst = "bgt"; break;
+		case 0x2: inst = "beq"; break;
+		case 0x3: inst = "bso"; break;
+		}
 	}
+	else if (!bo0 && bo1 && bo2 && bo3 && !bo4)
+	{
+		sign = "-";
+		switch (bi % 4)
+		{
+		case 0x0: inst = "blt"; break;
+		case 0x1: inst = "bgt"; break;
+		case 0x2: inst = "beq"; break;
+		case 0x3: inst = "bso"; break;
+		}
+	}
+	else if (!bo0 && bo1 && bo2 && bo3 && bo4)
+	{
+		sign = "+";
+		switch (bi % 4)
+		{
+		case 0x0: inst = "blt"; break;
+		case 0x1: inst = "bgt"; break;
+		case 0x2: inst = "beq"; break;
+		case 0x3: inst = "bso"; break;
+		}
+	}
+
+	if (inst[0] == '\0')
+	{
+		return Write(fmt::format("bc 0x%x, 0x%x, 0x%x, %d, %d", bo, bi, bd, aa, lk));
+	}
+
+	DisAsm_CR_BRANCH(std::string(inst) + (lk ? "l" : "") + (aa ? "a" : "") + sign, bi / 4, bd);
 }
 
 void PPUDisAsm::SC(ppu_opcode_t op)
@@ -990,7 +921,7 @@ void PPUDisAsm::SC(ppu_opcode_t op)
 
 void PPUDisAsm::B(ppu_opcode_t op)
 {
-	const u32 li = op.bt24;
+	const u32 li = op.li;
 	const u32 aa = op.aa;
 	const u32 lk = op.lk;
 
@@ -1029,50 +960,24 @@ void PPUDisAsm::BCLR(ppu_opcode_t op)
 {
 	const u32 bo = op.bo;
 	const u32 bi = op.bi;
-	const u32 bh = op.bh;
-	const u32 lk = op.lk;
 
-	if (bo == 0b10100)
-	{
-		Write(lk ? "blrl" : "blr");
-		return;
-	}
+	const u8 bo0 = (bo & 0x10) ? 1 : 0;
+	const u8 bo1 = (bo & 0x08) ? 1 : 0;
+	const u8 bo2 = (bo & 0x04) ? 1 : 0;
+	const u8 bo3 = (bo & 0x02) ? 1 : 0;
 
-	const auto [inst, sign] = get_BC_info(bo, bi);
-
-	if (!inst)
-	{
-		Write(fmt::format("bclr %d, cr%d[%s], %d, %d", bo, bi / 4, get_partial_BI_field(bi), bh, lk));
-		return;
-	}
-
-	std::string final = std::string(inst) + (lk ? "lrl" : "lr");
-	if (sign) final += sign;
-
-	// Check if need to display full BI value
-	if (sign == 't' || sign == 'f')
-	{
-		DisAsm_BI_BRANCH(final, bi, bh);
-		return;
-	}
-
-	DisAsm_CR_BRANCH(final, bi / 4, bh);
+	if (bo0 && !bo1 && bo2 && !bo3) { Write("blr"); return; }
+	Write(fmt::format("bclr [%x:%x:%x:%x], cr%d[%x], %d, %d", bo0, bo1, bo2, bo3, bi / 4, bi % 4, op.bh, op.lk));
 }
 
 void PPUDisAsm::CRNOR(ppu_opcode_t op)
 {
-	if (op.crba == op.crbb)
-	{
-		DisAsm_BI2("crnot", op.crbd, op.crba);
-		return;
-	}
-
-	DisAsm_BI3("crnor", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crnor", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CRANDC(ppu_opcode_t op)
 {
-	DisAsm_BI3("crandc", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crandc", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::ISYNC(ppu_opcode_t op)
@@ -1082,50 +987,32 @@ void PPUDisAsm::ISYNC(ppu_opcode_t op)
 
 void PPUDisAsm::CRXOR(ppu_opcode_t op)
 {
-	if (op.crba == op.crbb && op.crba == op.crbd)
-	{
-		DisAsm_BI1("crclr", op.crbd);
-		return;
-	}
-
-	DisAsm_BI3("crxor", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crxor", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CRNAND(ppu_opcode_t op)
 {
-	DisAsm_BI3("crnand", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crnand", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CRAND(ppu_opcode_t op)
 {
-	DisAsm_BI3("crand", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crand", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CREQV(ppu_opcode_t op)
 {
-	if (op.crba == op.crbb && op.crba == op.crbd)
-	{
-		DisAsm_BI1("crset", op.crbd);
-		return;
-	}
-
-	DisAsm_BI3("creqv", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("creqv", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CRORC(ppu_opcode_t op)
 {
-	DisAsm_BI3("crorc", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("crorc", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::CROR(ppu_opcode_t op)
 {
-	if (op.crba == op.crbb)
-	{
-		DisAsm_BI2("crmove", op.crbd, op.crba);
-		return;
-	}
-
-	DisAsm_BI3("cror", op.crbd, op.crba, op.crbb);
+	DisAsm_INT3("cror", op.crbd, op.crba, op.crbb);
 }
 
 void PPUDisAsm::BCCTR(ppu_opcode_t op)
@@ -1133,28 +1020,17 @@ void PPUDisAsm::BCCTR(ppu_opcode_t op)
 	const u32 bo = op.bo;
 	const u32 bi = op.bi;
 	const u32 bh = op.bh;
-	const u32 lk = op.lk;
 
-	if (bo == 0b10100)
+	if (bo == 20)
 	{
-		Write(lk ? "bctrl" : "bctr");
-		return;
+		return Write(op.lk ? "bctrl" : "bctr");
 	}
 
-	const auto [inst, sign] = get_BC_info(bo, bi);
-
-	if (!inst || inst[1] == 'd')
+	switch (op.lk)
 	{
-		// Invalid or unknown bcctr form
-		Write(fmt::format("bcctr %d, cr%d[%s], %d, %d", bo, bi / 4, get_partial_BI_field(bi), bh, lk));
-		return;
+	case 0: DisAsm_INT3("bcctr", bo, bi, bh); break;
+	case 1: DisAsm_INT3("bcctrl", bo, bi, bh); break;
 	}
-
-	std::string final = inst;
-	final += lk ? "ctrl"sv : "ctr"sv;
-	if (sign) final += sign;
-
-	DisAsm_CR_BRANCH(final, bi / 4, bh);
 }
 
 void PPUDisAsm::RLWIMI(ppu_opcode_t op)
@@ -1695,12 +1571,12 @@ void PPUDisAsm::OR(ppu_opcode_t op)
 	if (op.rs == op.rb)
 	{
 		switch (op.opcode)
-		{
+		{	
 		case 0x7f9ce378: return Write("db8cyc");
 		case 0x7fbdeb78: return Write("db10cyc");
 		case 0x7fdef378: return Write("db12cyc");
 		case 0x7ffffb78: return Write("db16cyc");
-		default: DisAsm_R2_RC("mr", op.ra, op.rb, op.rc);
+		default : DisAsm_R2_RC("mr", op.ra, op.rb, op.rc);
 		}
 	}
 	else
@@ -2318,5 +2194,5 @@ void PPUDisAsm::UNK(ppu_opcode_t op)
 		}
 	}
 
-	Write("?? ??");
+	Write(fmt::format("Unknown/Illegal opcode! (0x%08x)", op.opcode));
 }

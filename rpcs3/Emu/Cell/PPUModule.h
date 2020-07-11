@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "PPUFunction.h"
 #include "PPUCallback.h"
@@ -7,13 +7,13 @@
 #include "Emu/Memory/vm_var.h"
 
 // Helper function
-constexpr const char* ppu_select_name(const char* name, u32 /*id*/)
+constexpr const char* ppu_select_name(const char* name, u32 id)
 {
 	return name;
 }
 
 // Helper function
-constexpr const char* ppu_select_name(const char* /*name*/, const char* orig_name)
+constexpr const char* ppu_select_name(const char* name, const char* orig_name)
 {
 	return orig_name;
 }
@@ -103,11 +103,11 @@ class ppu_module_manager final
 
 	static std::unordered_map<std::string, ppu_static_module*>& access();
 
-	static void register_module(ppu_static_module*);
+	static void register_module(ppu_static_module* module);
 
-	static ppu_static_function& access_static_function(const char* _module, u32 fnid);
+	static ppu_static_function& access_static_function(const char* module, u32 fnid);
 
-	static ppu_static_variable& access_static_variable(const char* _module, u32 vnid);
+	static ppu_static_variable& access_static_variable(const char* module, u32 vnid);
 
 	// Global variable for each registered function
 	template <auto* Func>
@@ -120,9 +120,9 @@ public:
 	static const ppu_static_module* get_module(const std::string& name);
 
 	template <auto* Func>
-	static auto& register_static_function(const char* _module, const char* name, ppu_function_t func, u32 fnid)
+	static auto& register_static_function(const char* module, const char* name, ppu_function_t func, u32 fnid)
 	{
-		auto& info = access_static_function(_module, fnid);
+		auto& info = access_static_function(module, fnid);
 
 		info.name  = name;
 		info.index = ppu_function_manager::register_function<decltype(Func), Func>(func);
@@ -141,13 +141,13 @@ public:
 	}
 
 	template <auto* Var>
-	static auto& register_static_variable(const char* _module, const char* name, u32 vnid)
+	static auto& register_static_variable(const char* module, const char* name, u32 vnid)
 	{
 		using gvar = std::decay_t<decltype(*Var)>;
 
 		static_assert(std::is_same<u32, typename gvar::addr_type>::value, "Static variable registration: vm::gvar<T> expected");
 
-		auto& info = access_static_variable(_module, vnid);
+		auto& info = access_static_variable(module, vnid);
 
 		info.name  = name;
 		info.var   = reinterpret_cast<vm::gvar<char>*>(Var);
@@ -171,7 +171,6 @@ public:
 	static const ppu_static_module cellAtracMulti;
 	static const ppu_static_module cellAudio;
 	static const ppu_static_module cellAvconfExt;
-	static const ppu_static_module cellAuthDialogUtility;
 	static const ppu_static_module cellBGDL;
 	static const ppu_static_module cellCamera;
 	static const ppu_static_module cellCelp8Enc;
@@ -286,12 +285,12 @@ inline RT ppu_execute(ppu_thread& ppu, Args... args)
 	return func(ppu, args...);
 }
 
-#define REG_FNID(_module, nid, func) ppu_module_manager::register_static_function<&func>(#_module, ppu_select_name(#func, nid), BIND_FUNC(func, ppu.cia = static_cast<u32>(ppu.lr) & ~3), ppu_generate_id(nid))
+#define REG_FNID(module, nid, func) ppu_module_manager::register_static_function<&func>(#module, ppu_select_name(#func, nid), BIND_FUNC(func, ppu.cia = (u32)ppu.lr & ~3), ppu_generate_id(nid))
 
-#define REG_FUNC(_module, func) REG_FNID(_module, #func, func)
+#define REG_FUNC(module, func) REG_FNID(module, #func, func)
 
-#define REG_VNID(_module, nid, var) ppu_module_manager::register_static_variable<&var>(#_module, ppu_select_name(#var, nid), ppu_generate_id(nid))
+#define REG_VNID(module, nid, var) ppu_module_manager::register_static_variable<&var>(#module, ppu_select_name(#var, nid), ppu_generate_id(nid))
 
-#define REG_VAR(_module, var) REG_VNID(_module, #var, var)
+#define REG_VAR(module, var) REG_VNID(module, #var, var)
 
-#define UNIMPLEMENTED_FUNC(_module) _module.todo("%s()", __func__)
+#define UNIMPLEMENTED_FUNC(module) module.todo("%s", __func__)

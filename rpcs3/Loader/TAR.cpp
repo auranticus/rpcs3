@@ -1,11 +1,9 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 
 #include "TAR.h"
 
 #include <cmath>
 #include <cstdlib>
-
-LOG_CHANNEL(tar_log, "TAR");
 
 tar_object::tar_object(const fs::file& file, size_t offset)
 	: m_file(file)
@@ -30,7 +28,7 @@ int octalToDecimal(int octalNumber)
 	{
 		rem = octalNumber % 10;
 		octalNumber /= 10;
-		decimalNumber += rem * (1 << (i * 3));
+		decimalNumber += rem * pow(8, i);
 		++i;
 	}
 	return decimalNumber;
@@ -68,11 +66,11 @@ fs::file tar_object::get_file(std::string path)
 		{
 			TARHeader header = read_header(largest_offset);
 
-			if (std::string(header.magic).find("ustar") != umax)
+			if (std::string(header.magic).find("ustar") != std::string::npos)
 				m_map[header.name] = largest_offset;
 
 			int size = octalToDecimal(atoi(header.size));
-			if (path == header.name) { //path is equal, read file and advance offset to start of next block
+			if (path.compare(header.name) == 0) { //path is equal, read file and advance offset to start of next block
 				std::vector<u8> buf(size);
 				m_file.read(buf, size);
 				int offset = ((m_file.pos() - initial_offset + 512 - 1) & ~(512 - 1)) + initial_offset;
@@ -114,29 +112,9 @@ bool tar_object::extract(std::string path, std::string ignore)
 		{
 		case '0':
 		{
-			auto data = get_file(header.name).release();
-
-			if (fs::file prev{result})
-			{
-				if (prev.to_vector<u8>() == static_cast<fs::container_stream<std::vector<u8>>*>(data.get())->obj)
-				{
-					// Workaround: avoid overwriting existing data if it's the same.
-					tar_log.notice("TAR Loader: skipped existing file %s", header.name);
-					break;
-				}
-			}
-
 			fs::file file(result, fs::rewrite);
-
-			if (file)
-			{
-				file.write(static_cast<fs::container_stream<std::vector<u8>>*>(data.get())->obj);
-				tar_log.notice("TAR Loader: written file %s", header.name);
-				break;
-			}
-
-			tar_log.error("TAR Loader: failed to write file %s (%s)", header.name, fs::g_tls_error);
-			return false;
+			file.write(get_file(header.name).to_vector<u8>());
+			break;
 		}
 
 		case '5':
@@ -146,7 +124,7 @@ bool tar_object::extract(std::string path, std::string ignore)
 		}
 
 		default:
-			tar_log.error("TAR Loader: unknown file type: 0x%x", header.filetype);
+			LOG_ERROR(GENERAL, "TAR Loader: unknown file type: 0x%x", header.filetype);
 			return false;
 		}
 	}

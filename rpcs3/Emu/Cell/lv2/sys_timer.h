@@ -26,6 +26,7 @@ struct lv2_timer_context : lv2_obj
 	static const u32 id_base = 0x11000000;
 
 	void operator()();
+	void on_abort();
 
 	shared_mutex mutex;
 	atomic_t<u32> state{SYS_TIMER_STATE_STOP};
@@ -37,24 +38,6 @@ struct lv2_timer_context : lv2_obj
 
 	atomic_t<u64> expire{0}; // Next expiration time
 	atomic_t<u64> period{0}; // Period (oneshot if 0)
-
-	void get_information(sys_timer_information_t& info)
-	{
-		std::shared_lock lock(mutex);
-
-		if (state == SYS_TIMER_STATE_RUN)
-		{
-			info.timer_state = SYS_TIMER_STATE_RUN;
-			info.next_expire = expire;
-			info.period      = period;
-		}
-		else
-		{
-			info.timer_state = SYS_TIMER_STATE_STOP;
-			info.next_expire = 0;
-			info.period      = 0;
-		}
-	}
 };
 
 using lv2_timer = named_thread<lv2_timer_context>;

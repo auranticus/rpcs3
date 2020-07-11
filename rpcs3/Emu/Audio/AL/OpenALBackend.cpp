@@ -1,4 +1,5 @@
 ﻿#include "stdafx.h"
+#include "Emu/System.h"
 
 #include "OpenALBackend.h"
 
@@ -6,34 +7,31 @@
 #pragma comment(lib, "OpenAL32.lib")
 #endif
 
-LOG_CHANNEL(OpenAL);
 
-#define checkForAlError(sit) do { ALenum g_last_al_error = alGetError(); if(g_last_al_error != AL_NO_ERROR) OpenAL.error("%s: OpenAL error 0x%04x", sit, g_last_al_error); } while(0)
-#define checkForAlcError(sit) do { ALCenum g_last_alc_error = alcGetError(m_device); if(g_last_alc_error != ALC_NO_ERROR) { OpenAL.error("%s: OpenALC error 0x%04x", sit, g_last_alc_error); return; }} while(0)
+#define checkForAlError(sit) do { ALenum g_last_al_error = alGetError(); if(g_last_al_error != AL_NO_ERROR) fmt::throw_exception("%s: OpenAL error 0x%04x", sit, g_last_al_error); } while(0)
+#define checkForAlcError(sit) do { ALCenum g_last_alc_error = alcGetError(m_device); if(g_last_alc_error != ALC_NO_ERROR) fmt::throw_exception("%s: OpenALC error 0x%04x", sit, g_last_alc_error); } while(0)
+
 
 OpenALBackend::OpenALBackend()
-	: AudioBackend()
+	: m_sampling_rate(get_sampling_rate())
+	, m_sample_size(get_sample_size())
 {
 	ALCdevice* m_device = alcOpenDevice(nullptr);
-	checkForAlcError("alcOpenDevice");
+	checkForAlcError("OpenALBackend->alcOpenDevice");
 
 	ALCcontext* m_context = alcCreateContext(m_device, nullptr);
-	checkForAlcError("alcCreateContext");
+	checkForAlcError("OpenALBackend->alcCreateContext");
 
 	alcMakeContextCurrent(m_context);
-	checkForAlcError("alcMakeContextCurrent");
+	checkForAlcError("OpenALBackend->alcMakeContextCurrent");
 
-	switch (m_channels)
+	if (get_channels() == 2)
 	{
-	case 2:
 		m_format = (m_sample_size == 2) ? AL_FORMAT_STEREO16 : AL_FORMAT_STEREO_FLOAT32;
-		break;
-	case 6:
-		m_format = (m_sample_size == 2) ? AL_FORMAT_51CHN16 : AL_FORMAT_51CHN32;
-		break;
-	default:
+	}
+	else
+	{
 		m_format = (m_sample_size == 2) ? AL_FORMAT_71CHN16 : AL_FORMAT_71CHN32;
-		break;
 	}
 }
 
@@ -130,7 +128,7 @@ bool OpenALBackend::AddData(const void* src, u32 num_samples)
 	// Fail if there are no free buffers remaining
 	if (m_num_unqueued == 0)
 	{
-		OpenAL.warning("No unqueued buffers remaining");
+		LOG_WARNING(GENERAL, "OpenALBackend : no unqueued buffers remaining");
 		return false;
 	}
 

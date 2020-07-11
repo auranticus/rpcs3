@@ -80,10 +80,10 @@ bool statichle_handler::load_patterns()
 		for (u32 j = 0; j < 32; j++)
 			dapat.start_pattern[j] = char_to_u8(pattern[0][j * 2], pattern[0][(j * 2) + 1]);
 
-		dapat.crc16_length = ::narrow<u8>(char_to_u8(pattern[1][0], pattern[1][1]), HERE);
+		dapat.crc16_length = char_to_u8(pattern[1][0], pattern[1][1]);
 		dapat.crc16        = (char_to_u8(pattern[2][0], pattern[2][1]) << 8) | char_to_u8(pattern[2][2], pattern[2][3]);
 		dapat.total_length = (char_to_u8(pattern[3][0], pattern[3][1]) << 8) | char_to_u8(pattern[3][2], pattern[3][3]);
-		dapat._module      = pattern[4];
+		dapat.module       = pattern[4];
 		dapat.name         = pattern[5];
 
 		dapat.fnid = ppu_generate_id(dapat.name.c_str());
@@ -121,7 +121,7 @@ uint16_t statichle_handler::gen_CRC16(const uint8_t* data_p, size_t length)
 	crc  = ~crc;
 	data = crc;
 	crc  = (crc << 8) | ((data >> 8) & 0xff);
-	return static_cast<u16>(crc);
+	return (unsigned short)(crc);
 }
 
 bool statichle_handler::check_against_patterns(vm::cptr<u8>& data, u32 size, u32 addr)
@@ -153,11 +153,11 @@ bool statichle_handler::check_against_patterns(vm::cptr<u8>& data, u32 size, u32
 		static_hle.success("Found function %s at 0x%x", pat.name, addr);
 
 		// patch the code
-		const auto smodule = ppu_module_manager::get_module(pat._module);
+		const auto smodule = ppu_module_manager::get_module(pat.module);
 
 		if (smodule == nullptr)
 		{
-			static_hle.error("Couldn't find module: %s", pat._module);
+			static_hle.error("Couldn't find module: %s", pat.module);
 			return false;
 		}
 

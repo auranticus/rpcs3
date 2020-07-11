@@ -1,6 +1,8 @@
-﻿#pragma once
+#pragma once
 
-#include <string>
+#include "Emu/System.h"
+#include "Utilities/File.h"
+#include "Utilities/StrFmt.h"
 
 // Do not confuse this with the "user" in Emu/System.h. 
 // That user is read from config.yml, and it only represents the currently "logged in" user.

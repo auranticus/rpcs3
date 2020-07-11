@@ -2,30 +2,17 @@
 #include <QInputDialog>
 #include <QKeyEvent>
 #include <QEvent>
-#include <QScreen>
-#include <QHeaderView>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QMenu>
-#include <QDesktopServices>
-#include <QMessageBox>
-#include <QGuiApplication>
-#include <QUrl>
 
 #include "user_manager_dialog.h"
 #include "table_item_delegate.h"
 #include "main_application.h"
-#include "gui_settings.h"
-
-#include "Emu/System.h"
 
 #include "Utilities/StrUtil.h"
-#include "Utilities/File.h"
-#include "util/logs.hpp"
 
-constexpr auto qstr = QString::fromStdString;
-
-LOG_CHANNEL(gui_log, "GUI");
+#include <QRegExpValidator>
+#include <QInputDialog>
+#include <QScreen>
+#include <QKeyEvent>
 
 namespace
 {
@@ -65,8 +52,7 @@ namespace
 }
 
 user_manager_dialog::user_manager_dialog(std::shared_ptr<gui_settings> gui_settings, QWidget* parent)
-	: QDialog(parent)
-	, m_gui_settings(gui_settings)
+	: QDialog(parent), m_user_list(), m_sort_column(1), m_sort_ascending(true), m_gui_settings(gui_settings)
 {
 	setWindowTitle(tr("User Manager"));
 	setMinimumSize(QSize(500, 400));
@@ -129,7 +115,7 @@ void user_manager_dialog::Init()
 	restoreGeometry(m_gui_settings->GetValue(gui::um_geometry).toByteArray());
 
 	// Use this in multiple connects to protect the current user from deletion/rename.
-	auto enableButtons = [=, this]()
+	auto enableButtons = [=]()
 	{
 		const u32 key = GetUserKey();
 		if (key == 0)
@@ -213,7 +199,7 @@ void user_manager_dialog::UpdateTable(bool mark_only)
 		m_table->setItem(row, 1, username_item);
 
 		// Compare current config value with the one in this user (only 8 digits in userId)
-		if (m_active_user.starts_with(user.second.GetUserId()))
+		if (m_active_user.compare(0, 8, user.second.GetUserId()) == 0)
 		{
 			user_id_item->setFont(bold_font);
 			username_item->setFont(bold_font);
@@ -251,7 +237,7 @@ void user_manager_dialog::OnUserRemove()
 	if (QMessageBox::question(this, tr("Delete Confirmation"), tr("Are you sure you want to delete the following user?\n\nUser ID: %0\nUsername: %1\n\n"
 		"This will remove all files in:\n%2").arg(user_id).arg(username).arg(qstr(user_dir)), QMessageBox::Yes, QMessageBox::No) == QMessageBox::Yes)
 	{
-		gui_log.warning("Deleting user: %s", user_dir);
+		LOG_WARNING(GENERAL, "Deleting user: %s", user_dir);
 		fs::remove_all(user_dir);
 		UpdateTable();
 	}
@@ -315,11 +301,11 @@ void user_manager_dialog::OnUserRename()
 
 		if (fs::write_file(username_file, fs::rewrite, new_username))
 		{
-			gui_log.success("Renamed user %s with id %s to %s", username, user_id, new_username);
+			LOG_SUCCESS(GENERAL, "Renamed user %s with id %s to %s", username, user_id, new_username);
 		}
 		else
 		{
-			gui_log.fatal("Could not rename user %s with id %s to %s", username, user_id, new_username);
+			LOG_FATAL(GENERAL, "Could not rename user %s with id %s to %s", username, user_id, new_username);
 		}
 
 		UpdateTable();
@@ -382,9 +368,9 @@ void user_manager_dialog::OnUserLogin()
 	const u32 key = GetUserKey();
 	const std::string new_user = m_user_list[key].GetUserId();
 
-	if (!main_application::InitializeEmulator(new_user, false, Emu.HasGui()))
+	if (!main_application::InitializeEmulator(new_user, false))
 	{
-		gui_log.fatal("Failed to login user! username=%s key=%d", new_user, key);
+		LOG_FATAL(GENERAL, "Failed to login user! username=%s key=%d", new_user, key);
 		return;
 	}
 
@@ -403,7 +389,7 @@ void user_manager_dialog::OnSort(int logicalIndex)
 	else if (logicalIndex == m_sort_column)
 	{
 		m_sort_ascending ^= true;
-	}
+	} 
 	else
 	{
 		m_sort_ascending = true;
@@ -420,6 +406,7 @@ void user_manager_dialog::ShowContextMenu(const QPoint &pos)
 		return;
 	}
 
+	QPoint global_pos = m_table->mapToGlobal(pos);
 	QMenu* menu = new QMenu();
 
 	// Create submenu for sort options.
@@ -443,16 +430,16 @@ void user_manager_dialog::ShowContextMenu(const QPoint &pos)
 	connect(remove_act, &QAction::triggered, this, &user_manager_dialog::OnUserRemove);
 	connect(rename_act, &QAction::triggered, this, &user_manager_dialog::OnUserRename);
 	connect(login_act, &QAction::triggered, this, &user_manager_dialog::OnUserLogin);
-	connect(show_dir_act, &QAction::triggered, [=, this]()
+	connect(show_dir_act, &QAction::triggered, [=]()
 	{
 		QString path = qstr(m_user_list[key].GetUserDir());
 		QDesktopServices::openUrl(QUrl("file:///" + path));
 	});
 
-	connect(user_id_act, &QAction::triggered, this, [=, this] {OnSort(0); });
-	connect(username_act, &QAction::triggered, this, [=, this] {OnSort(1); });
+	connect(user_id_act, &QAction::triggered, this, [=] {OnSort(0); });
+	connect(username_act, &QAction::triggered, this, [=] {OnSort(1); });
 
-	menu->exec(m_table->viewport()->mapToGlobal(pos));
+	menu->exec(global_pos);
 }
 
 // Returns the current user's key > 0. if no user is selected, return 0

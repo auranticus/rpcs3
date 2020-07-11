@@ -68,11 +68,8 @@ namespace rsx {
 
 
 		// 4GB memory space / 4096 bytes per page = 1048576 pages
-		// Initialized to utils::protection::rw
 		static constexpr size_t num_pages = 0x1'0000'0000 / 4096;
-		per_page_info_t _info[num_pages]{0};
-	
-		static_assert(static_cast<u32>(utils::protection::rw) == 0, "utils::protection::rw must have value 0 for the above constructor to work");
+		per_page_info_t _info[num_pages];
 
 		static constexpr size_t rsx_address_to_index(u32 address)
 		{
@@ -111,6 +108,13 @@ namespace rsx {
 		}
 
 	public:
+		tex_cache_checker_t()
+		{
+			// Initialize array to all 0
+			memset(&_info, 0, sizeof(_info));
+		}
+		static_assert(static_cast<u32>(utils::protection::rw) == 0, "utils::protection::rw must have value 0 for the above constructor to work");
+
 		void set_protection(const address_range& range, utils::protection prot)
 		{
 			AUDIT(range.is_page_range());
@@ -129,7 +133,7 @@ namespace rsx {
 
 		void reset_refcount()
 		{
-			for (per_page_info_t* ptr = rsx_address_to_info_pointer(0); ptr <= rsx_address_to_info_pointer(0xFFFFFFFF); ptr++)
+			for (per_page_info_t* ptr = rsx_address_to_info_pointer(0); ptr <= rsx_address_to_info_pointer(0xFF'FF'FF'FF); ptr++)
 			{
 				ptr->reset_refcount();
 			}

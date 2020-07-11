@@ -13,7 +13,7 @@ namespace vm
 	extern u8* const g_sudo_addr;
 	extern u8* const g_exec_addr;
 	extern u8* const g_stat_addr;
-	extern u8 g_reservations[];
+	extern u8* const g_reservations;
 
 	struct writer_lock;
 
@@ -22,7 +22,6 @@ namespace vm
 		main,
 		user64k,
 		user1m,
-		rsx_context,
 		video,
 		stack,
 		spu,
@@ -149,7 +148,7 @@ namespace vm
 	template<>
 	struct cast_impl<u32>
 	{
-		static vm::addr_t cast(u32 addr, const char* /*loc*/)
+		static vm::addr_t cast(u32 addr, const char* loc)
 		{
 			return static_cast<vm::addr_t>(addr);
 		}
@@ -163,7 +162,7 @@ namespace vm
 	template<>
 	struct cast_impl<u64>
 	{
-		static vm::addr_t cast(u64 addr, const char* /*loc*/)
+		static vm::addr_t cast(u64 addr, const char* loc)
 		{
 			return static_cast<vm::addr_t>(static_cast<u32>(addr));
 		}
@@ -215,9 +214,6 @@ namespace vm
 	{
 		g_base_addr[addr] = value;
 	}
-
-	// Read or write virtual memory in a safe manner, returns false on failure
-	bool try_access(u32 addr, void* ptr, u32 size, bool is_write);
 
 	inline namespace ps3_
 	{

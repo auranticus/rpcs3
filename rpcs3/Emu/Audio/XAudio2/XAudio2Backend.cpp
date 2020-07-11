@@ -1,201 +1,92 @@
-﻿#ifndef _WIN32
-#error "XAudio2 can only be built on Windows."
-#endif
+﻿#ifdef _WIN32
 
-#include "util/logs.hpp"
+#include "Utilities/Log.h"
 #include "Utilities/StrFmt.h"
-#include "Emu/System.h"
-#include "Emu/system_config.h"
 
 #include "XAudio2Backend.h"
 #include <Windows.h>
-#include <system_error>
-
-#pragma comment(lib, "xaudio2_9redist.lib")
-
-LOG_CHANNEL(XAudio);
 
 XAudio2Backend::XAudio2Backend()
-	: AudioBackend()
 {
-	Microsoft::WRL::ComPtr<IXAudio2> instance;
-
-	// In order to prevent errors on CreateMasteringVoice, apparently we need CoInitializeEx according to:
-	// https://docs.microsoft.com/en-us/windows/win32/api/xaudio2fx/nf-xaudio2fx-xaudio2createvolumemeter
-	CoInitializeEx(NULL, COINIT_MULTITHREADED);
-
-	HRESULT hr = XAudio2Create(instance.GetAddressOf(), 0, XAUDIO2_DEFAULT_PROCESSOR);
-	if (FAILED(hr))
-	{
-		XAudio.error("XAudio2Create() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		return;
-	}
-
-	hr = instance->CreateMasteringVoice(&m_master_voice, m_channels, 48000);
-	if (FAILED(hr))
-	{
-		XAudio.error("CreateMasteringVoice() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		return;
-	}
-
-	// All succeeded, "commit"
-	m_xaudio2_instance = std::move(instance);
 }
 
 XAudio2Backend::~XAudio2Backend()
 {
-	if (m_source_voice != nullptr)
-	{
-		m_source_voice->Stop();
-		m_source_voice->DestroyVoice();
-	}
-
-	if (m_master_voice != nullptr)
-	{
-		m_master_voice->DestroyVoice();
-	}
-
-	if (m_xaudio2_instance != nullptr)
-	{
-		m_xaudio2_instance->StopEngine();
-	}
 }
 
 void XAudio2Backend::Play()
 {
-	AUDIT(m_source_voice != nullptr);
-
-	HRESULT hr = m_source_voice->Start();
-	if (FAILED(hr))
-	{
-		XAudio.error("Start() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-	}
+	lib->play();
 }
 
 void XAudio2Backend::Close()
 {
-	Pause();
-	Flush();
+	lib->stop();
+	lib->flush();
 }
 
 void XAudio2Backend::Pause()
 {
-	AUDIT(m_source_voice != nullptr);
-
-	HRESULT hr = m_source_voice->Stop();
-	if (FAILED(hr))
-	{
-		XAudio.error("Stop() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-	}
+	lib->stop();
 }
 
 void XAudio2Backend::Open(u32 /* num_buffers */)
 {
-	HRESULT hr;
-
-	WAVEFORMATEX waveformatex;
-	waveformatex.wFormatTag = m_convert_to_u16 ? WAVE_FORMAT_PCM : WAVE_FORMAT_IEEE_FLOAT;
-	waveformatex.nChannels = m_channels;
-	waveformatex.nSamplesPerSec = m_sampling_rate;
-	waveformatex.nAvgBytesPerSec = static_cast<DWORD>(m_sampling_rate * m_channels * m_sample_size);
-	waveformatex.nBlockAlign = m_channels * m_sample_size;
-	waveformatex.wBitsPerSample = m_sample_size * 8;
-	waveformatex.cbSize = 0;
-
-	hr = m_xaudio2_instance->CreateSourceVoice(&m_source_voice, &waveformatex, 0, XAUDIO2_DEFAULT_FREQ_RATIO);
-	if (FAILED(hr))
+	if (lib.get() == nullptr)
 	{
-		XAudio.error("CreateSourceVoice() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-		return;
+		void* hmodule;
+
+		if (hmodule = LoadLibraryExW(L"XAudio2_9.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+		{
+			// XAudio 2.9 uses the same code as XAudio 2.8
+			lib.reset(xa28_init(hmodule));
+
+			LOG_SUCCESS(GENERAL, "XAudio 2.9 initialized");
+		}
+		else if (hmodule = LoadLibraryExW(L"XAudio2_8.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+		{
+			lib.reset(xa28_init(hmodule));
+
+			LOG_SUCCESS(GENERAL, "XAudio 2.8 initialized");
+		}
+		else if (hmodule = LoadLibraryExW(L"XAudio2_7.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+		{
+			lib.reset(xa27_init(hmodule));
+
+			LOG_SUCCESS(GENERAL, "XAudio 2.7 initialized");
+		}
+		else
+		{
+			fmt::throw_exception("No supported XAudio2 library found");
+		}
 	}
 
-	AUDIT(m_source_voice != nullptr);
-	m_source_voice->SetVolume(1.0f);
+	lib->open();
 }
 
 bool XAudio2Backend::IsPlaying()
 {
-	AUDIT(m_source_voice != nullptr);
-
-	XAUDIO2_VOICE_STATE state;
-	m_source_voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-
-	return state.BuffersQueued > 0 || state.pCurrentBufferContext != nullptr;
+	return lib->is_playing();
 }
 
 bool XAudio2Backend::AddData(const void* src, u32 num_samples)
 {
-	AUDIT(m_source_voice != nullptr);
-
-	XAUDIO2_VOICE_STATE state;
-	m_source_voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-
-	if (state.BuffersQueued >= MAX_AUDIO_BUFFERS)
-	{
-		XAudio.warning("Too many buffers enqueued (%d)", state.BuffersQueued);
-		return false;
-	}
-
-	XAUDIO2_BUFFER buffer;
-
-	buffer.AudioBytes = num_samples * m_sample_size;
-	buffer.Flags = 0;
-	buffer.LoopBegin = XAUDIO2_NO_LOOP_REGION;
-	buffer.LoopCount = 0;
-	buffer.LoopLength = 0;
-	buffer.pAudioData = static_cast<const BYTE*>(src);
-	buffer.pContext = nullptr;
-	buffer.PlayBegin = 0;
-	buffer.PlayLength = AUDIO_BUFFER_SAMPLES;
-
-	HRESULT hr = m_source_voice->SubmitSourceBuffer(&buffer);
-	if (FAILED(hr))
-	{
-		XAudio.error("AddData() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-		return false;
-	}
-
-	return true;
+	return lib->add(src, num_samples);
 }
 
 void XAudio2Backend::Flush()
 {
-	AUDIT(m_source_voice != nullptr);
-
-	HRESULT hr = m_source_voice->FlushSourceBuffers();
-	if (FAILED(hr))
-	{
-		XAudio.error("FlushSourceBuffers() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-	}
+	lib->flush();
 }
 
 u64 XAudio2Backend::GetNumEnqueuedSamples()
 {
-	AUDIT(m_source_voice != nullptr);
-
-	XAUDIO2_VOICE_STATE state;
-	m_source_voice->GetState(&state);
-
-	// all buffers contain AUDIO_BUFFER_SAMPLES, so we can easily calculate how many samples there are remaining
-	return static_cast<u64>(AUDIO_BUFFER_SAMPLES - state.SamplesPlayed % AUDIO_BUFFER_SAMPLES) + (state.BuffersQueued * AUDIO_BUFFER_SAMPLES);
+	return lib->enqueued_samples();
 }
 
 f32 XAudio2Backend::SetFrequencyRatio(f32 new_ratio)
 {
-	new_ratio = std::clamp(new_ratio, XAUDIO2_MIN_FREQ_RATIO, XAUDIO2_DEFAULT_FREQ_RATIO);
-
-	HRESULT hr = m_source_voice->SetFrequencyRatio(new_ratio);
-	if (FAILED(hr))
-	{
-		XAudio.error("SetFrequencyRatio() failed: %s (0x%08x)", std::system_category().message(hr), static_cast<u32>(hr));
-		Emu.Pause();
-		return 1.0f;
-	}
-
-	return new_ratio;
+	return lib->set_freq_ratio(new_ratio);
 }
+
+#endif

@@ -5,12 +5,10 @@
 #include "PPUModule.h"
 
 #include <unordered_set>
-#include "util/yaml.hpp"
+#include "yaml-cpp/yaml.h"
 #include "Utilities/asm.h"
 
-LOG_CHANNEL(ppu_validator);
-
-constexpr ppu_decoder<ppu_itype> s_ppu_itype;
+const ppu_decoder<ppu_itype> s_ppu_itype;
 
 template<>
 void fmt_class_string<ppu_attr>::format(std::string& out, u64 arg)
@@ -36,18 +34,25 @@ void fmt_class_string<bs_t<ppu_attr>>::format(std::string& out, u64 arg)
 	format_bitset(out, arg, "[", ",", "]", &fmt_class_string<ppu_attr>::format);
 }
 
+template <>
+void fmt_class_string<ppu_iname::type>::format(std::string& out, u64 arg)
+{
+	// Decode instruction name from the enum value
+	for (u32 i = 0; i < 10; i++)
+	{
+		if (u64 value = (arg >> (54 - i * 6)) & 0x3f)
+		{
+			out += static_cast<char>(value + 0x20);
+		}
+	}
+}
+
 void ppu_module::validate(u32 reloc)
 {
 	// Load custom PRX configuration if available
 	if (fs::file yml{path + ".yml"})
 	{
-		const auto [cfg, error] = yaml_load(yml.to_string());
-
-		if (!error.empty())
-		{
-			ppu_validator.error("Failed to load %s.yml: %s", path, error);
-			return;
-		}
+		const auto cfg = YAML::Load(yml.to_string());
 
 		u32 index = 0;
 
@@ -57,20 +62,20 @@ void ppu_module::validate(u32 reloc)
 			const u32 addr = func["addr"].as<u32>(-1);
 			const u32 size = func["size"].as<u32>(0);
 
-			if (addr != umax && index < funcs.size())
+			if (addr != -1 && index < funcs.size())
 			{
 				u32 found = funcs[index].addr - reloc;
 
 				while (addr > found && index + 1 < funcs.size())
 				{
-					ppu_validator.warning("%s.yml : unexpected function at 0x%x (0x%x, 0x%x)", path, found, addr, size);
+					LOG_WARNING(LOADER, "%s.yml : unexpected function at 0x%x (0x%x, 0x%x)", path, found, addr, size);
 					index++;
 					found = funcs[index].addr - reloc;
 				}
 
 				if (addr < found)
 				{
-					ppu_validator.error("%s.yml : function not found (0x%x, 0x%x)", path, addr, size);
+					LOG_ERROR(LOADER, "%s.yml : function not found (0x%x, 0x%x)", path, addr, size);
 					continue;
 				}
 
@@ -78,7 +83,7 @@ void ppu_module::validate(u32 reloc)
 				{
 					if (size + 4 != funcs[index].size || vm::read32(addr + size) != ppu_instructions::NOP())
 					{
-						ppu_validator.error("%s.yml : function size mismatch at 0x%x(size=0x%x) (0x%x, 0x%x)", path, found, funcs[index].size, addr, size);
+						LOG_ERROR(LOADER, "%s.yml : function size mismatch at 0x%x(size=0x%x) (0x%x, 0x%x)", path, found, funcs[index].size, addr, size);
 					}
 				}
 
@@ -86,7 +91,7 @@ void ppu_module::validate(u32 reloc)
 			}
 			else
 			{
-				ppu_validator.error("%s.yml : function not found at the end (0x%x, 0x%x)", path, addr, size);
+				LOG_ERROR(LOADER, "%s.yml : function not found at the end (0x%x, 0x%x)", path, addr, size);
 				break;
 			}
 		}
@@ -100,13 +105,13 @@ void ppu_module::validate(u32 reloc)
 		{
 			if (funcs[index].size)
 			{
-				ppu_validator.error("%s.yml : function not covered at 0x%x (size=0x%x)", path, funcs[index].addr, funcs[index].size);
+				LOG_ERROR(LOADER, "%s.yml : function not covered at 0x%x (size=0x%x)", path, funcs[index].addr, funcs[index].size);
 			}
 
 			index++;
 		}
 
-		ppu_validator.success("%s.yml : validation completed", path);
+		LOG_SUCCESS(LOADER, "%s.yml : validation completed", path);
 	}
 }
 
@@ -560,7 +565,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 
 		if (func.addr)
 		{
-			if (toc && func.toc && func.toc != umax && func.toc != toc)
+			if (toc && func.toc && func.toc != -1 && func.toc != toc)
 			{
 				func.toc = -1;
 			}
@@ -578,14 +583,14 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 		func.addr = addr;
 		func.toc = toc;
 		func.name = fmt::format("__0x%x", func.addr);
-		ppu_log.trace("Function 0x%x added (toc=0x%x)", addr, toc);
+		LOG_TRACE(PPU, "Function 0x%x added (toc=0x%x)", addr, toc);
 		return func;
 	};
 
 	// Register new TOC and find basic set of functions
 	auto add_toc = [&](u32 toc)
 	{
-		if (!toc || toc == umax || !TOCs.emplace(toc).second)
+		if (!toc || toc == -1 || !TOCs.emplace(toc).second)
 		{
 			return;
 		}
@@ -598,7 +603,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 				if (ptr[0] >= start && ptr[0] < end && ptr[0] % 4 == 0 && ptr[1] == toc)
 				{
 					// New function
-					ppu_log.trace("OPD*: [0x%x] 0x%x (TOC=0x%x)", ptr, ptr[0], ptr[1]);
+					LOG_TRACE(PPU, "OPD*: [0x%x] 0x%x (TOC=0x%x)", ptr, ptr[0], ptr[1]);
 					add_func(*ptr, addr_heap.count(ptr.addr()) ? toc : 0, 0);
 					ptr++;
 				}
@@ -664,7 +669,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			const u32 _toc_end = _toc + 0x8000;
 
 			// TODO: improve TOC constraints
-			if (_toc % 4 || !vm::check_addr(_toc) || _toc >= 0x40000000 || (_toc >= start && _toc < end))
+			if (_toc % 4 || _toc == 0 || _toc >= 0x40000000 || (_toc >= start && _toc < end))
 			{
 				sec_end.set(0);
 				break;
@@ -677,7 +682,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			}
 		}
 
-		if (sec_end) ppu_log.notice("Reading OPD section at 0x%x...", sec.addr);
+		if (sec_end) LOG_NOTICE(PPU, "Reading OPD section at 0x%x...", sec.addr);
 
 		// Mine
 		for (vm::cptr<u32> ptr = vm::cast(sec.addr); ptr < sec_end; ptr += 2)
@@ -688,7 +693,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			// Add function and TOC
 			const u32 addr = ptr[0];
 			const u32 toc = ptr[1];
-			ppu_log.trace("OPD: [0x%x] 0x%x (TOC=0x%x)", ptr, addr, toc);
+			LOG_TRACE(PPU, "OPD: [0x%x] 0x%x (TOC=0x%x)", ptr, addr, toc);
 
 			TOCs.emplace(toc);
 			auto& func = add_func(addr, addr_heap.count(ptr.addr()) ? toc : 0, 0);
@@ -712,7 +717,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 	// Clean TOCs
 	for (auto&& pair : fmap)
 	{
-		if (pair.second.toc == umax)
+		if (pair.second.toc == -1)
 		{
 			pair.second.toc = 0;
 		}
@@ -760,21 +765,21 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			ptr = vm::cast(ptr.addr() + size);
 		}
 
-		if (sec_end && sec.size > 4) ppu_log.notice("Reading .eh_frame section at 0x%x...", sec.addr);
+		if (sec_end && sec.size > 4) LOG_NOTICE(PPU, "Reading .eh_frame section at 0x%x...", sec.addr);
 
 		// Mine
 		for (vm::cptr<u32> ptr = vm::cast(sec.addr); ptr < sec_end; ptr = vm::cast(ptr.addr() + ptr[0] + 4))
 		{
-			if (ptr[0] == 0u)
+			if (ptr[0] == 0)
 			{
 				// Null terminator
 				break;
 			}
 
-			if (ptr[1] == 0u)
+			if (ptr[1] == 0)
 			{
 				// CIE
-				ppu_log.trace(".eh_frame: [0x%x] CIE 0x%x", ptr, ptr[0]);
+				LOG_TRACE(PPU, ".eh_frame: [0x%x] CIE 0x%x", ptr, ptr[0]);
 			}
 			else
 			{
@@ -785,23 +790,23 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 				u32 size = 0;
 
 				// TODO: 64 bit or 32 bit values (approximation)
-				if (ptr[2] == 0u && ptr[3] == 0u)
+				if (ptr[2] == 0 && ptr[3] == 0)
 				{
 					size = ptr[5];
 				}
-				else if ((ptr[2] + 1 == 0u || ptr[2] == 0u) && ptr[4] == 0u && ptr[5])
+				else if ((ptr[2] == -1 || ptr[2] == 0) && ptr[4] == 0 && ptr[5])
 				{
 					addr = ptr[3];
 					size = ptr[5];
 				}
-				else if (ptr[2] + 1 && ptr[3])
+				else if (ptr[2] != -1 && ptr[3])
 				{
 					addr = ptr[2];
 					size = ptr[3];
 				}
 				else
 				{
-					ppu_log.error(".eh_frame: [0x%x] 0x%x, 0x%x, 0x%x, 0x%x, 0x%x", ptr, ptr[0], ptr[1], ptr[2], ptr[3], ptr[4]);
+					LOG_ERROR(PPU, ".eh_frame: [0x%x] 0x%x, 0x%x, 0x%x, 0x%x, 0x%x", ptr, ptr[0], ptr[1], ptr[2], ptr[3], ptr[4]);
 					continue;
 				}
 
@@ -811,12 +816,12 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 					addr += ptr.addr() + 8;
 				}
 
-				ppu_log.trace(".eh_frame: [0x%x] FDE 0x%x (cie=*0x%x, addr=0x%x, size=0x%x)", ptr, ptr[0], cie, addr, size);
+				LOG_TRACE(PPU, ".eh_frame: [0x%x] FDE 0x%x (cie=*0x%x, addr=0x%x, size=0x%x)", ptr, ptr[0], cie, addr, size);
 
 				// TODO: invalid offsets, zero offsets (removed functions?)
 				if (addr % 4 || size % 4 || size > (end - start) || addr < start || addr + size > end)
 				{
-					if (addr) ppu_log.error(".eh_frame: Invalid function 0x%x", addr);
+					if (addr) LOG_ERROR(PPU, ".eh_frame: Invalid function 0x%x", addr);
 					continue;
 				}
 
@@ -835,7 +840,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 		ppu_function& func = func_queue[i];
 
 		// Fixup TOCs
-		if (func.toc && func.toc != umax)
+		if (func.toc && func.toc != -1)
 		{
 			for (u32 addr : func.callers)
 			{
@@ -982,13 +987,13 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 				{
 					auto& new_func = add_func(target, 0, func.addr);
 
-					if (func.toc && func.toc != umax && new_func.toc == 0)
+					if (func.toc && func.toc != -1 && new_func.toc == 0)
 					{
 						const u32 toc = func.toc + toc_add;
 						add_toc(toc);
 						add_func(new_func.addr, toc, 0);
 					}
-					else if (new_func.toc && new_func.toc != umax && func.toc == 0)
+					else if (new_func.toc && new_func.toc != -1 && func.toc == 0)
 					{
 						const u32 toc = new_func.toc - toc_add;
 						add_toc(toc);
@@ -1014,7 +1019,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 					continue;
 				}
 			}
-
+	
 			if (ptr + 4 <= fend &&
 				ptr[0] == STD(r2, r1, 0x28) &&
 				(ptr[1] & 0xffff0000) == ADDIS(r2, r2, {}) &&
@@ -1029,13 +1034,13 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 				{
 					auto& new_func = add_func(target, 0, func.addr);
 
-					if (func.toc && func.toc != umax && new_func.toc == 0)
+					if (func.toc && func.toc != -1 && new_func.toc == 0)
 					{
 						const u32 toc = func.toc + toc_add;
 						add_toc(toc);
 						add_func(new_func.addr, toc, 0);
 					}
-					else if (new_func.toc && new_func.toc != umax && func.toc == 0)
+					else if (new_func.toc && new_func.toc != -1 && func.toc == 0)
 					{
 						const u32 toc = new_func.toc - toc_add;
 						add_toc(toc);
@@ -1106,8 +1111,8 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			}
 
 			if (ptr + 3 <= fend &&
-				ptr[0] == 0x7c0004acu &&
-				ptr[1] == 0x00000000u &&
+				ptr[0] == 0x7c0004ac &&
+				ptr[1] == 0x00000000 &&
 				ptr[2] == BLR())
 			{
 				// Weird function (illegal instruction)
@@ -1120,7 +1125,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 			if (const u32 len = ppu_test(ptr, fend, ppu_patterns::abort))
 			{
 				// Function "abort"
-				ppu_log.notice("Function [0x%x]: 'abort'", func.addr);
+				LOG_NOTICE(PPU, "Function [0x%x]: 'abort'", func.addr);
 				func.attr += ppu_attr::no_return;
 				func.attr += ppu_attr::known_size;
 				func.size = len;
@@ -1202,7 +1207,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 
 					if (target < start || target >= end)
 					{
-						ppu_log.warning("[0x%x] Invalid branch at 0x%x -> 0x%x", func.addr, iaddr, target);
+						LOG_WARNING(PPU, "[0x%x] Invalid branch at 0x%x -> 0x%x", func.addr, iaddr, target);
 						continue;
 					}
 
@@ -1285,7 +1290,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 							// Acknowledge jumptable detection failure
 							if (!(func.attr & ppu_attr::no_size))
 							{
-								ppu_log.warning("[0x%x] Jump table not found! 0x%x-0x%x", func.addr, jt_addr, jt_end);
+								LOG_WARNING(PPU, "[0x%x] Jump table not found! 0x%x-0x%x", func.addr, jt_addr, jt_end);
 							}
 
 							func.attr += ppu_attr::no_size;
@@ -1294,7 +1299,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 						}
 						else
 						{
-							ppu_log.trace("[0x%x] Jump table found: 0x%x-0x%x", func.addr, jt_addr, _ptr);
+							LOG_TRACE(PPU, "[0x%x] Jump table found: 0x%x-0x%x", func.addr, jt_addr, _ptr);
 						}
 					}
 
@@ -1320,7 +1325,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 				else if (type == ppu_itype::STDU && func.attr & ppu_attr::no_size && (op.opcode == *_ptr || *_ptr == ppu_instructions::BLR()))
 				{
 					// Hack
-					ppu_log.success("[0x%x] Instruction repetition: 0x%08x", iaddr, op.opcode);
+					LOG_SUCCESS(PPU, "[0x%x] Instruction repetition: 0x%08x", iaddr, op.opcode);
 					add_block(_ptr.addr());
 					block.second = _ptr.addr() - block.first;
 					break;
@@ -1426,7 +1431,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 		// Just ensure that functions don't overlap
 		if (func.addr + func.size > next)
 		{
-			ppu_log.warning("Function overlap: [0x%x] 0x%x -> 0x%x", func.addr, func.size, next - func.addr);
+			LOG_WARNING(PPU, "Function overlap: [0x%x] 0x%x -> 0x%x", func.addr, func.size, next - func.addr);
 			continue; //func.size = next - func.addr;
 
 			// Also invalidate blocks
@@ -1496,7 +1501,7 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 
 			if (_ptr.addr() >= next)
 			{
-				ppu_log.warning("Function gap: [0x%x] 0x%x bytes at 0x%x", func.addr, next - start, start);
+				LOG_WARNING(PPU, "Function gap: [0x%x] 0x%x bytes at 0x%x", func.addr, next - start, start);
 				break;
 			}
 		}
@@ -1520,17 +1525,17 @@ void ppu_module::analyse(u32 lib_toc, u32 entry)
 	for (auto&& pair : fmap)
 	{
 		auto& func = pair.second;
-		ppu_log.trace("Function %s (size=0x%x, toc=0x%x, attr %#x)", func.name, func.size, func.toc, func.attr);
+		LOG_TRACE(PPU, "Function %s (size=0x%x, toc=0x%x, attr %#x)", func.name, func.size, func.toc, func.attr);
 		funcs.emplace_back(std::move(func));
 	}
 
-	ppu_log.notice("Function analysis: %zu functions (%zu enqueued)", funcs.size(), func_queue.size());
+	LOG_NOTICE(PPU, "Function analysis: %zu functions (%zu enqueued)", funcs.size(), func_queue.size());
 }
 
 void ppu_acontext::UNK(ppu_opcode_t op)
 {
 	std::fill_n(gpr, 32, spec_gpr{});
-	ppu_log.error("Unknown/Illegal opcode: 0x%08x at 0x%x" HERE, op.opcode, cia);
+	LOG_ERROR(PPU, "Unknown/Illegal opcode: 0x%08x at 0x%x" HERE, op.opcode, cia);
 }
 
 void ppu_acontext::MFVSCR(ppu_opcode_t op)
@@ -2144,7 +2149,7 @@ void ppu_acontext::MULLI(ppu_opcode_t op)
 		}
 	}
 
-	gpr[op.rd] = spec_gpr::range(min, max, gpr[op.ra].tz() + std::countr_zero<u64>(op.simm16));
+	gpr[op.rd] = spec_gpr::range(min, max, gpr[op.ra].tz() + utils::cnttz64(op.simm16));
 }
 
 void ppu_acontext::SUBFIC(ppu_opcode_t op)
@@ -2172,7 +2177,7 @@ void ppu_acontext::ADDI(ppu_opcode_t op)
 
 void ppu_acontext::ADDIS(ppu_opcode_t op)
 {
-	gpr[op.rd] = op.ra ? gpr[op.ra] + spec_gpr::fixed(op.simm16 * 65536) : spec_gpr::fixed(op.simm16 * 65536);
+	gpr[op.rd] = op.ra ? gpr[op.ra] + spec_gpr::fixed((u64)op.simm16 << 16) : spec_gpr::fixed((u64)op.simm16 << 16);
 }
 
 void ppu_acontext::BC(ppu_opcode_t op)
@@ -2245,17 +2250,17 @@ void ppu_acontext::RLWIMI(ppu_opcode_t op)
 	if (op.mb32 <= op.me32)
 	{
 		// 32-bit op, including mnemonics: INSLWI, INSRWI (TODO)
-		min = utils::rol32(static_cast<u32>(min), op.sh32) & mask;
-		max = utils::rol32(static_cast<u32>(max), op.sh32) & mask;
+		min = utils::rol32((u32)min, op.sh32) & mask;
+		max = utils::rol32((u32)max, op.sh32) & mask;
 	}
 	else
 	{
 		// Full 64-bit op with duplication
-		min = utils::rol64(static_cast<u32>(min) | min << 32, op.sh32) & mask;
-		max = utils::rol64(static_cast<u32>(max) | max << 32, op.sh32) & mask;
+		min = utils::rol64((u32)min | min << 32, op.sh32) & mask;
+		max = utils::rol64((u32)max | max << 32, op.sh32) & mask;
 	}
 
-	if (mask != umax)
+	if (mask != -1)
 	{
 		// Insertion
 		min |= gpr[op.ra].bmin & ~mask;
@@ -2301,14 +2306,14 @@ void ppu_acontext::RLWINM(ppu_opcode_t op)
 			// EXTRWI and other possible mnemonics
 		}
 
-		min = utils::rol32(static_cast<u32>(min), op.sh32) & mask;
-		max = utils::rol32(static_cast<u32>(max), op.sh32) & mask;
+		min = utils::rol32((u32)min, op.sh32) & mask;
+		max = utils::rol32((u32)max, op.sh32) & mask;
 	}
 	else
 	{
 		// Full 64-bit op with duplication
-		min = utils::rol64(static_cast<u32>(min) | min << 32, op.sh32) & mask;
-		max = utils::rol64(static_cast<u32>(max) | max << 32, op.sh32) & mask;
+		min = utils::rol64((u32)min | min << 32, op.sh32) & mask;
+		max = utils::rol64((u32)max | max << 32, op.sh32) & mask;
 	}
 
 	gpr[op.ra] = spec_gpr::approx(min, max);
@@ -2477,7 +2482,7 @@ void ppu_acontext::RLDIMI(ppu_opcode_t op)
 	min = utils::rol64(min, sh) & mask;
 	max = utils::rol64(max, sh) & mask;
 
-	if (mask != umax)
+	if (mask != -1)
 	{
 		// Insertion
 		min |= gpr[op.ra].bmin & ~mask;
@@ -3460,7 +3465,7 @@ const bool s_tes = []()
 				{
 					auto exp = ppu_acontext::spec_gpr::approx(r1.ones() & r2.ones(), r1.mask() & r2.mask());
 
-					ppu_log.error("ppu_acontext failure:"
+					LOG_ERROR(PPU, "ppu_acontext failure:"
 						"\n\tr1 = 0x%016x..0x%016x, 0x%016x:0x%016x"
 						"\n\tr2 = 0x%016x..0x%016x, 0x%016x:0x%016x"
 						"\n\tr3 = 0x%016x..0x%016x, 0x%016x:0x%016x"
@@ -3476,7 +3481,7 @@ const bool s_tes = []()
 	ppu_acontext::spec_gpr r1;
 	r1 = ppu_acontext::spec_gpr::range(0x13311, 0x1fe22);
 	r1 = r1 ^ ppu_acontext::spec_gpr::approx(0x000, 0xf00);
-	ppu_log.success("0x%x..0x%x", r1.imin, r1.imax);
+	LOG_SUCCESS(PPU, "0x%x..0x%x", r1.imin, r1.imax);
 
 	return true;
 }();

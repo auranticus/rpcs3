@@ -1,6 +1,7 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "sys_interrupt.h"
 
+#include "Emu/System.h"
 #include "Emu/IdManager.h"
 
 #include "Emu/Cell/ErrorCodes.h"
@@ -15,7 +16,7 @@ void lv2_int_serv::exec()
 	({
 		{ ppu_cmd::reset_stack, 0 },
 		{ ppu_cmd::set_args, 2 }, arg1, arg2,
-		{ ppu_cmd::opd_call, 0 }, thread->entry_func,
+		{ ppu_cmd::lle_call, 2 },
 		{ ppu_cmd::sleep, 0 }
 	});
 
@@ -39,12 +40,12 @@ void lv2_int_serv::join()
 	thread_ctrl::notify(*thread);
 	(*thread)();
 
-	idm::remove_verify<named_thread<ppu_thread>>(thread->id, static_cast<std::weak_ptr<named_thread<ppu_thread>>>(thread));
+	idm::remove<named_thread<ppu_thread>>(thread->id);
 }
 
 error_code sys_interrupt_tag_destroy(ppu_thread& ppu, u32 intrtag)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_interrupt.warning("sys_interrupt_tag_destroy(intrtag=0x%x)", intrtag);
 
@@ -73,7 +74,7 @@ error_code sys_interrupt_tag_destroy(ppu_thread& ppu, u32 intrtag)
 
 error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32 intrtag, u32 intrthread, u64 arg1, u64 arg2)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_interrupt.warning("_sys_interrupt_thread_establish(ih=*0x%x, intrtag=0x%x, intrthread=0x%x, arg1=0x%llx, arg2=0x%llx)", ih, intrtag, intrthread, arg1, arg2);
 
@@ -133,7 +134,7 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 
 error_code _sys_interrupt_thread_disestablish(ppu_thread& ppu, u32 ih, vm::ptr<u64> r13)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_interrupt.warning("_sys_interrupt_thread_disestablish(ih=0x%x, r13=*0x%x)", ih, r13);
 
@@ -150,8 +151,6 @@ error_code _sys_interrupt_thread_disestablish(ppu_thread& ppu, u32 ih, vm::ptr<u
 		return CELL_ESRCH;
 	}
 
-	lv2_obj::sleep(ppu);
-
 	// Wait for sys_interrupt_thread_eoi() and destroy interrupt thread
 	handler->join();
 
@@ -163,7 +162,7 @@ error_code _sys_interrupt_thread_disestablish(ppu_thread& ppu, u32 ih, vm::ptr<u
 
 void sys_interrupt_thread_eoi(ppu_thread& ppu)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_interrupt.trace("sys_interrupt_thread_eoi()");
 

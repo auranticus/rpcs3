@@ -1,9 +1,10 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
+#include "Emu/System.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "sysPrxForUser.h"
 
-LOG_CHANNEL(sysPrxForUser);
+extern logs::channel sysPrxForUser;
 
 s32 sys_rsxaudio_close_connection()
 {

@@ -1,15 +1,11 @@
 ﻿#include <mutex>
+#include "Emu/System.h"
 #include "Utilities/File.h"
 #include "Crypto/md5.h"
 #include "Crypto/aes.h"
 #include "skylander_dialog.h"
 #include "Utilities/BEType.h"
 #include "Emu/Io/Skylander.h"
-
-#include <QLabel>
-#include <QGroupBox>
-#include <QFileDialog>
-#include <QVBoxLayout>
 
 skylander_dialog* skylander_dialog::inst = nullptr;
 
@@ -193,7 +189,7 @@ skylander_dialog::skylander_dialog(QWidget* parent)
 	combo_skylist            = new QComboBox();
 	for (auto& entry : list_skylanders)
 	{
-		combo_skylist->addItem(QString::fromStdString(entry.second), QVariant(int{entry.first}));
+		combo_skylist->addItem(QString::fromStdString(entry.second), QVariant((int)entry.first));
 	}
 
 	combo_skylist->addItem(tr("--Unknown--"), QVariant(0xFFFF));
@@ -235,19 +231,15 @@ skylander_dialog::skylander_dialog(QWidget* parent)
 	// clang-format off
 	connect(combo_skylist, &QComboBox::currentTextChanged, this, [&]()
 	{
-		u16 sky_id = combo_skylist->itemData(combo_skylist->currentIndex()).toInt();
-		if (sky_id != 0xFFFF)
 		{
+			std::lock_guard lock(g_skylander.sky_mutex);
+			u16 sky_id = combo_skylist->itemData(combo_skylist->currentIndex()).toInt();
+			if (sky_id != 0xFFFF)
 			{
-				std::lock_guard lock(g_skylander.sky_mutex);
-				reinterpret_cast<le_t<u32>&>(g_skylander.sky_dump[0])    = combo_skylist->itemData(combo_skylist->currentIndex()).toInt() & 0xffff;
-				reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x10]) = combo_skylist->itemData(combo_skylist->currentIndex()).toInt() & 0xffff;
-				reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x1E]) = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
-			}
+				(le_t<u32>&)g_skylander.sky_dump[0]    = (u16)combo_skylist->itemData(combo_skylist->currentIndex()).toInt();
+				(le_t<u16>&)g_skylander.sky_dump[0x10] = (u16)combo_skylist->itemData(combo_skylist->currentIndex()).toInt();
+				(le_t<u16>&)g_skylander.sky_dump[0x1E] = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
 
-			if (is_initialized())
-			{
-				std::lock_guard lock(g_skylander.sky_mutex);
 				std::array<u8, 16> zero_array = {};
 				for (u32 index = 8; index < 0x40; index++)
 				{
@@ -258,9 +250,9 @@ skylander_dialog::skylander_dialog(QWidget* parent)
 				}
 
 				set_checksums();
-			}
 
-			g_skylander.sky_reload = true;
+				g_skylander.sky_reload = true;
+			}
 		}
 
 		g_skylander.sky_save();
@@ -387,46 +379,30 @@ void skylander_dialog::set_checksums()
 		get_block(active + 9, sub_header);
 
 		// Type 4
-		reinterpret_cast<le_t<u16>&>(sub_header[0x0]) = 0x0106;
-		u16 res_crc                                   = skylander_crc16(0xFFFF, sub_header.data(), 16);
-		reinterpret_cast<le_t<u16>&>(sub_header[0x0]) = do_crc_blocks(res_crc, {10, 12, 13});
+		(le_t<u16>&)sub_header[0x0] = 0x0106;
+		u16 res_crc                 = skylander_crc16(0xFFFF, sub_header.data(), 16);
+		(le_t<u16>&)sub_header[0x0] = do_crc_blocks(res_crc, {10, 12, 13});
 
 		// Type 3
-		std::array<u8, 16> zero_block{};
-		res_crc = do_crc_blocks(0xFFFF, {5, 6, 8});
+		std::array<u8, 16> zero_block = {};
+		res_crc                       = do_crc_blocks(0xFFFF, {5, 6, 8});
 		for (u32 index = 0; index < 0x0E; index++)
 		{
 			res_crc = skylander_crc16(res_crc, zero_block.data(), 16);
 		}
-		reinterpret_cast<le_t<u16>&>(decrypted_header[0xA]) = res_crc;
+		(le_t<u16>&)decrypted_header[0xA] = res_crc;
 
 		// Type 2
-		res_crc                                             = do_crc_blocks(0xFFFF, {1, 2, 4});
-		reinterpret_cast<le_t<u16>&>(decrypted_header[0xC]) = res_crc;
+		res_crc                           = do_crc_blocks(0xFFFF, {1, 2, 4});
+		(le_t<u16>&)decrypted_header[0xC] = res_crc;
 
 		// Type 1
-		reinterpret_cast<le_t<u16>&>(decrypted_header[0xE]) = 5;
-		reinterpret_cast<le_t<u16>&>(decrypted_header[0xE]) = skylander_crc16(0xFFFF, decrypted_header.data(), 16);
+		(le_t<u16>&)decrypted_header[0xE] = 5;
+		(le_t<u16>&)decrypted_header[0xE] = skylander_crc16(0xFFFF, decrypted_header.data(), 16);
 
 		set_block(active, decrypted_header);
 		set_block(active + 9, sub_header);
 	}
-}
-
-bool skylander_dialog::is_initialized()
-{
-	std::lock_guard lock(g_skylander.sky_mutex);
-	for (u32 index = 1; index < 0x10; index++)
-	{
-		for (u32 subdex = 0; subdex < (0x30 / sizeof(u64)); subdex++)
-		{
-			if (reinterpret_cast<const u64&>(g_skylander.sky_dump[(index * 0x40) + (subdex * sizeof(u64))]) != 0)
-			{
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 void skylander_dialog::new_skylander()
@@ -449,15 +425,24 @@ void skylander_dialog::new_skylander()
 		memset(g_skylander.sky_dump, 0, 0x40 * 0x10);
 
 		// Set the block permissions
-		reinterpret_cast<le_t<u32>&>(g_skylander.sky_dump[0x36]) = 0x690F0F0F;
+		(le_t<u32>&)g_skylander.sky_dump[0x36] = 0x690F0F0F;
 		for (u32 index = 1; index < 0x10; index++)
 		{
-			reinterpret_cast<le_t<u32>&>(g_skylander.sky_dump[(index * 0x40) + 0x36]) = 0x69080F7F;
+			(le_t<u32>&)g_skylander.sky_dump[(index * 0x40) + 0x36] = 0x69080F7F;
 		}
 
-		reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x1E]) = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
+		(le_t<u16>&)g_skylander.sky_dump[0x1E] = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
 
-		// On a new skylander everything is 0'd and no crc apart from the first one is set
+		std::array<u8, 16> zero_array = {};
+		for (u32 index = 8; index < 0x40; index++)
+		{
+			if ((index + 1) % 4)
+			{
+				set_block(index, zero_array);
+			}
+		}
+
+		set_checksums();
 
 		g_skylander.sky_reload = true;
 	}
@@ -492,72 +477,63 @@ void skylander_dialog::load_skylander()
 void skylander_dialog::update_edits()
 {
 	// clang-format off
-	auto widget_enabler = [&](bool status_noinit, bool status)
+	auto widget_enabler = [&](bool status)
 	{
-		combo_skylist->setEnabled(status_noinit);
-		edit_skyid->setEnabled(status_noinit);
+		combo_skylist->setEnabled(status);
+		edit_skyid->setEnabled(status);
 		edit_skyxp->setEnabled(status);
 		edit_skymoney->setEnabled(status);
-		button_update->setEnabled(status_noinit);
+		button_update->setEnabled(status);
 	};
 	// clang-format on
 
 	if (!g_skylander.sky_file)
 	{
-		widget_enabler(false, false);
+		widget_enabler(false);
 		return;
 	}
-
-	if (!is_initialized())
+	else
 	{
-		widget_enabler(true, false);
-		std::lock_guard lock(g_skylander.sky_mutex);
-		edit_skyid->setText(QString::number(reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x10])));
-		return;
+		widget_enabler(true);
 	}
 
-	widget_enabler(true, true);
 	{
 		std::lock_guard lock(g_skylander.sky_mutex);
-		edit_skyid->setText(QString::number(reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x10])));
+		edit_skyid->setText(QString::number((le_t<u16>&)g_skylander.sky_dump[0x10]));
 
 		u8 active = get_active_block();
 
 		std::array<u8, 16> decrypted;
 		get_block(active, decrypted);
-		u32 xp = reinterpret_cast<le_t<u32>&>(decrypted[0]) & 0xFFFFFF;
+		u32 xp = ((le_t<u32>&)decrypted.data()[0]) & 0xFFFFFF;
 		edit_skyxp->setText(QString::number(xp));
-		u16 money = reinterpret_cast<le_t<u16, 1>&>(decrypted[3]);
+		u16 money = (le_t<u16>&)decrypted[3];
 		edit_skymoney->setText(QString::number(money));
 	}
 }
 
 void skylander_dialog::process_edits()
 {
-	bool cast_success = false;
 	{
 		std::lock_guard lock(g_skylander.sky_mutex);
 
-		u16 skyID = edit_skyid->text().toInt(&cast_success);
+		bool cast_success = false;
+		u16 skyID         = edit_skyid->text().toInt(&cast_success);
 		if (cast_success)
 		{
-			reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x10]) = skyID;
-			reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0])    = skyID;
+			(le_t<u16>&)g_skylander.sky_dump[0x10] = skyID;
+			(le_t<u16>&)g_skylander.sky_dump[0]    = skyID;
 		}
 
-		reinterpret_cast<le_t<u16>&>(g_skylander.sky_dump[0x1E]) = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
-	}
+		(le_t<u16>&)g_skylander.sky_dump[0x1E] = skylander_crc16(0xFFFF, g_skylander.sky_dump, 0x1E);
 
-	if (is_initialized())
-	{
-		std::lock_guard lock(g_skylander.sky_mutex);
 		u8 active = get_active_block();
 
 		std::array<u8, 16> decrypted_header;
 		get_block(active, decrypted_header);
 
-		u32 old_xp    = reinterpret_cast<le_t<u32>&>(decrypted_header[0]) & 0xFFFFFF;
-		u16 old_money = reinterpret_cast<le_t<u16, 1>&>(decrypted_header[3]);
+		u32 old_xp    = ((le_t<u32>&)decrypted_header.data()[0]) & 0xFFFFFF;
+		u16 old_money = (le_t<u16>&)decrypted_header[3];
 
 		u32 xp = edit_skyxp->text().toInt(&cast_success);
 		if (!cast_success)
@@ -567,7 +543,7 @@ void skylander_dialog::process_edits()
 			money = old_money;
 
 		memcpy(decrypted_header.data(), &xp, 3);
-		reinterpret_cast<le_t<u16>&>(decrypted_header[3]) = money;
+		(le_t<u16>&)decrypted_header[3] = money;
 
 		set_block(active, decrypted_header);
 

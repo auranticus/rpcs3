@@ -1,10 +1,8 @@
-﻿#include "stdafx.h"
-#include "Emu/VFS.h"
+#include "stdafx.h"
+#include "Emu/System.h"
 #include "TRP.h"
 #include "Crypto/sha1.h"
 #include "Utilities/StrUtil.h"
-
-LOG_CHANNEL(trp_log, "Trophy");
 
 TRPLoader::TRPLoader(const fs::file& f)
 	: trp_f(f)
@@ -20,7 +18,7 @@ bool TRPLoader::Install(const std::string& dest, bool show)
 
 	const std::string& local_path = vfs::get(dest);
 
-	if (!fs::is_dir(local_path) && !fs::create_dir(local_path))
+	if (!fs::create_dir(local_path) && fs::g_tls_error != fs::error::exist)
 	{
 		return false;
 	}
@@ -59,7 +57,7 @@ bool TRPLoader::LoadHeader(bool show)
 
 	if (show)
 	{
-		trp_log.notice("TRP version: 0x%x", m_header.trp_version);
+		LOG_NOTICE(LOADER, "TRP version: 0x%x", m_header.trp_version);
 	}
 
 	if (m_header.trp_version >= 2)
@@ -70,7 +68,7 @@ bool TRPLoader::LoadHeader(bool show)
 		trp_f.seek(0);
 		if (!trp_f.read(file_contents))
 		{
-			trp_log.notice("Failed verifying checksum");
+			LOG_NOTICE(LOADER, "Failed verifying checksum");
 		}
 		else
 		{
@@ -79,7 +77,7 @@ bool TRPLoader::LoadHeader(bool show)
 
 			if (memcmp(hash, m_header.sha1, 20) != 0)
 			{
-				trp_log.error("Invalid checksum of TROPHY.TRP file");
+				LOG_ERROR(LOADER, "Invalid checksum of TROPHY.TRP file");
 				return false;
 			}
 		}
@@ -99,7 +97,7 @@ bool TRPLoader::LoadHeader(bool show)
 
 		if (show)
 		{
-			trp_log.notice("TRP entry #%d: %s", m_entries[i].name);
+			LOG_NOTICE(LOADER, "TRP entry #%d: %s", m_entries[i].name);
 		}
 	}
 
@@ -148,7 +146,7 @@ void TRPLoader::RenameEntry(const char *oldname, const char *newname)
 	{
 		if (!strcmp(entry.name, oldname))
 		{
-			strcpy_trunc(entry.name, std::string_view(newname));
+			strcpy_trunc(entry.name, newname);
 		}
 	}
 }

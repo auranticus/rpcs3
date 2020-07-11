@@ -1,4 +1,6 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
+#include "Emu/System.h"
+#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
 
 #include "sys_lv2dbg.h"

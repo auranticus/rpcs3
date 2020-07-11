@@ -1,6 +1,7 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "CgBinaryProgram.h"
 
+#include "Emu/System.h"
 #include "Emu/RSX/RSXFragmentProgram.h"
 
 #include <algorithm>
@@ -47,17 +48,18 @@ void CgBinaryDisasm::AddCodeAsm(const std::string& code)
 std::string CgBinaryDisasm::GetMask()
 {
 	std::string ret;
-	ret.reserve(5);
 
-	static constexpr std::string_view dst_mask = "xyzw";
+	static const char dst_mask[4] =
+	{
+		'x', 'y', 'z', 'w'
+	};
 
-	ret += '.';
 	if (dst.mask_x) ret += dst_mask[0];
 	if (dst.mask_y) ret += dst_mask[1];
 	if (dst.mask_z) ret += dst_mask[2];
 	if (dst.mask_w) ret += dst_mask[3];
 
-	return ret == "."sv || ret == ".xyzw"sv ? "" : (ret);
+	return ret.empty() || strncmp(ret.c_str(), dst_mask, 4) == 0 ? "" : ("." + ret);
 }
 
 std::string CgBinaryDisasm::AddRegDisAsm(u32 index, int fp16)
@@ -67,7 +69,7 @@ std::string CgBinaryDisasm::AddRegDisAsm(u32 index, int fp16)
 
 std::string CgBinaryDisasm::AddConstDisAsm()
 {
-	u32* data = reinterpret_cast<u32*>(&m_buffer[m_offset + m_size + 4 * sizeof(u32)]);
+	u32* data = (u32*)&m_buffer[m_offset + m_size + 4 * sizeof(u32)];
 
 	m_step = 2 * 4 * sizeof(u32);
 	const u32 x = GetData(data[0]);
@@ -85,25 +87,20 @@ std::string CgBinaryDisasm::AddTexDisAsm()
 
 std::string CgBinaryDisasm::GetCondDisAsm()
 {
-	static constexpr std::string_view f = "xyzw";
+	static const char f[4] = { 'x', 'y', 'z', 'w' };
 
 	std::string swizzle, cond;
-	swizzle.reserve(5);
-	swizzle += '.';
 	swizzle += f[src0.cond_swizzle_x];
 	swizzle += f[src0.cond_swizzle_y];
 	swizzle += f[src0.cond_swizzle_z];
 	swizzle += f[src0.cond_swizzle_w];
 
-	if (swizzle == ".xxxx") swizzle = ".x";
-	else if (swizzle == ".yyyy") swizzle = ".y";
-	else if (swizzle == ".zzzz") swizzle = ".z";
-	else if (swizzle == ".wwww") swizzle = ".w";
+	if (swizzle == "xxxx") swizzle = "x";
+	if (swizzle == "yyyy") swizzle = "y";
+	if (swizzle == "zzzz") swizzle = "z";
+	if (swizzle == "wwww") swizzle = "w";
 
-	if (swizzle == ".xyzw"sv)
-	{
-		swizzle.clear();
-	}
+	swizzle = swizzle == "xyzw" ? "" : "." + swizzle;
 
 	if (src0.exec_if_gr && src0.exec_if_eq)
 	{
@@ -174,19 +171,20 @@ template<typename T> std::string CgBinaryDisasm::GetSrcDisAsm(T src)
 			"TEX6", "TEX7", "TEX8", "TEX9", "SSA"
 		};
 
+		const std::string perspective_correction = src2.perspective_corr ? "g" : "f";
+		const std::string input_attr_reg = reg_table[dst.src_attr_reg_num];
+
 		switch (dst.src_attr_reg_num)
 		{
 		case 0x00: ret += reg_table[0]; break;
 		default:
 			if (dst.src_attr_reg_num < std::size(reg_table))
 			{
-				const std::string perspective_correction = src2.perspective_corr ? "g" : "f";
-				const std::string input_attr_reg         = reg_table[dst.src_attr_reg_num];
 				ret += fmt::format("%s[%s]", perspective_correction.c_str(), input_attr_reg.c_str());
 			}
 			else
 			{
-				rsx_log.error("Bad src reg num: %d", u32{ dst.src_attr_reg_num });
+				LOG_ERROR(RSX, "Bad src reg num: %d", u32{ dst.src_attr_reg_num });
 			}
 			break;
 		}
@@ -198,30 +196,25 @@ template<typename T> std::string CgBinaryDisasm::GetSrcDisAsm(T src)
 		break;
 
 	default:
-		rsx_log.error("Bad src type %d", u32{ src.reg_type });
+		LOG_ERROR(RSX, "Bad src type %d", u32{ src.reg_type });
 		break;
 	}
 
-	static constexpr std::string_view f = "xyzw";
+	static const char f[4] = { 'x', 'y', 'z', 'w' };
 
 	std::string swizzle;
-	swizzle.reserve(5);
-	swizzle += '.';
 	swizzle += f[src.swizzle_x];
 	swizzle += f[src.swizzle_y];
 	swizzle += f[src.swizzle_z];
 	swizzle += f[src.swizzle_w];
 
-	if (swizzle == ".xxxx") swizzle = ".x";
-	else if (swizzle == ".yyyy") swizzle = ".y";
-	else if (swizzle == ".zzzz") swizzle = ".z";
-	else if (swizzle == ".wwww") swizzle = ".w";
+	if (swizzle == "xxxx") swizzle = "x";
+	if (swizzle == "yyyy") swizzle = "y";
+	if (swizzle == "zzzz") swizzle = "z";
+	if (swizzle == "wwww") swizzle = "w";
 
-	if (swizzle != ".xyzw"sv)
-	{
-		ret += swizzle;
-	}
-	
+	if (strncmp(swizzle.c_str(), f, 4) != 0) ret += "." + swizzle;
+
 	if (src.neg) ret = "-" + ret;
 	if (src.abs) ret = "|" + ret + "|";
 
@@ -231,7 +224,7 @@ template<typename T> std::string CgBinaryDisasm::GetSrcDisAsm(T src)
 void CgBinaryDisasm::TaskFP()
 {
 	m_size = 0;
-	u32* data = reinterpret_cast<u32*>(&m_buffer[m_offset]);
+	u32* data = (u32*)&m_buffer[m_offset];
 	verify(HERE), ((m_buffer_size - m_offset) % sizeof(u32) == 0);
 	for (u32 i = 0; i < (m_buffer_size - m_offset) / sizeof(u32); i++)
 	{
@@ -468,7 +461,7 @@ void CgBinaryDisasm::TaskFP()
 				if (SCB()) break;
 			}
 
-			rsx_log.error("Unknown/illegal instruction: 0x%x (forced unit %d)", m_opcode, forced_unit);
+			LOG_ERROR(RSX, "Unknown/illegal instruction: 0x%x (forced unit %d)", m_opcode, forced_unit);
 			break;
 		}
 

@@ -1,6 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include <QDialog>
+#include <QKeyEvent>
+#include <QCloseEvent>
 
 namespace Ui
 {

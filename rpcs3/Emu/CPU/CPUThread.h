@@ -1,9 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "../Utilities/Thread.h"
 #include "../Utilities/bit_set.h"
-
-#include <vector>
 
 // Thread state flags
 enum class cpu_flag : u32
@@ -17,6 +15,7 @@ enum class cpu_flag : u32
 	signal, // Thread received a signal (HLE)
 	memory, // Thread must unlock memory mutex
 
+	jit_return, // JIT compiler event (forced return)
 	dbg_global_pause, // Emulation paused
 	dbg_global_stop, // Emulation stopped
 	dbg_pause, // Thread paused
@@ -28,10 +27,7 @@ enum class cpu_flag : u32
 class cpu_thread
 {
 	// PPU cache backward compatibility hack
-	char dummy[sizeof(std::shared_ptr<void>) - 8];
-
-public:
-	u64 block_hash = 0;
+	char dummy[sizeof(std::shared_ptr<void>)];
 
 protected:
 	cpu_thread(u32 id);
@@ -39,6 +35,7 @@ protected:
 public:
 	virtual ~cpu_thread();
 	void operator()();
+	void on_abort();
 
 	// Self identifier
 	const u32 id;
@@ -66,7 +63,7 @@ public:
 	// Test stopped state
 	bool is_stopped() const
 	{
-		return !!(state & (cpu_flag::stop + cpu_flag::exit + cpu_flag::dbg_global_stop));
+		return !!(state & (cpu_flag::stop + cpu_flag::exit + cpu_flag::jit_return + cpu_flag::dbg_global_stop));
 	}
 
 	// Test paused state
@@ -76,7 +73,7 @@ public:
 	}
 
 	// Check thread type
-	u32 id_type() const
+	u32 id_type()
 	{
 		return id >> 24;
 	}
@@ -90,23 +87,11 @@ public:
 	// Thread stats for external observation
 	static atomic_t<u64> g_threads_created, g_threads_deleted;
 
-	// Get thread name (as assigned to named_thread)
-	std::string get_name() const;
+	// Get thread name
+	virtual std::string get_name() const = 0;
 
-	// Get CPU state dump (everything)
-	virtual std::string dump_all() const = 0;
-
-	// Get CPU register dump
-	virtual std::string dump_regs() const;
-
-	// Get CPU call stack dump
-	virtual std::string dump_callstack() const;
-
-	// Get CPU call stack list
-	virtual std::vector<std::pair<u32, u32>> dump_callstack_list() const;
-
-	// Get CPU dump of misc information
-	virtual std::string dump_misc() const;
+	// Get CPU state dump
+	virtual std::string dump() const;
 
 	// Thread entry point function
 	virtual void cpu_task() = 0;
@@ -134,9 +119,6 @@ public:
 
 	// Stop all threads with cpu_flag::dbg_global_stop
 	static void stop_all() noexcept;
-
-	// Send signal to the profiler(s) to flush results
-	static void flush_profilers() noexcept;
 };
 
 inline cpu_thread* get_current_cpu_thread() noexcept

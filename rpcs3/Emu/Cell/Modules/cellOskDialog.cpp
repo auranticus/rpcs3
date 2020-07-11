@@ -1,9 +1,9 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Emu/System.h"
-#include "Emu/system_config.h"
+#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUModule.h"
-#include "Emu/RSX/Overlays/overlay_osk.h"
-#include "Input/pad_thread.h"
+#include "Emu/RSX/Overlays/overlays.h"
+#include "pad_thread.h"
 
 #include "cellSysutil.h"
 #include "cellOskDialog.h"
@@ -63,7 +63,8 @@ std::shared_ptr<OskDialogBase> _get_osk_dialog(bool create = false)
 
 		if (auto manager = g_fxo->get<rsx::overlays::display_manager>())
 		{
-			std::shared_ptr<rsx::overlays::osk_dialog> dlg = std::make_shared<rsx::overlays::osk_dialog>();
+			auto dlg = std::make_shared<rsx::overlays::osk_latin>();
+
 			osk->dlg = manager->add(dlg);
 		}
 		else
@@ -104,17 +105,15 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 	}
 
 	// Get the OSK options
-	u32 maxLength = (inputFieldInfo->limit_length >= CELL_OSKDIALOG_STRING_SIZE) ? 511 : u32{inputFieldInfo->limit_length};
-	const u32 prohibitFlgs = dialogParam->prohibitFlgs;
-	const u32 allowOskPanelFlg = dialogParam->allowOskPanelFlg;
-	const u32 firstViewPanel = dialogParam->firstViewPanel;
+	u32 maxLength = (inputFieldInfo->limit_length >= CELL_OSKDIALOG_STRING_SIZE) ? 511 : (u32)inputFieldInfo->limit_length;
+	u32 options = dialogParam->prohibitFlgs;
 
 	// Get init text and prepare return value
 	osk->osk_input_result = CELL_OSKDIALOG_INPUT_FIELD_RESULT_OK;
 	std::memset(osk->osk_text, 0, sizeof(osk->osk_text));
 	std::memset(osk->osk_text_old, 0, sizeof(osk->osk_text_old));
 
-	if (inputFieldInfo->init_text)
+	if (inputFieldInfo->init_text.addr() != 0)
 	{
 		for (u32 i = 0; (i < maxLength) && (inputFieldInfo->init_text[i] != 0); i++)
 		{
@@ -125,9 +124,10 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 
 	// Get message to display above the input field
 	// Guarantees 0 terminated (+1). In praxis only 128 but for now lets display all of it
-	char16_t message[CELL_OSKDIALOG_STRING_SIZE + 1]{};
+	char16_t message[CELL_OSKDIALOG_STRING_SIZE + 1];
+	std::memset(message, 0, sizeof(message));
 
-	if (inputFieldInfo->message)
+	if (inputFieldInfo->message.addr() != 0)
 	{
 		for (u32 i = 0; (i < CELL_OSKDIALOG_STRING_SIZE) && (inputFieldInfo->message[i] != 0); i++)
 		{
@@ -176,7 +176,7 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 
 				sysutil_register_cb([&, length = i](ppu_thread& cb_ppu) -> s32
 				{
-					return_value = ccb(cb_ppu, string_to_send, static_cast<s32>(length));
+					return_value = ccb(cb_ppu, string_to_send, (s32)length);
 					cellOskDialog.warning("osk_confirm_callback return_value=%d", return_value);
 
 					for (u32 i = 0; i < CELL_OSKDIALOG_STRING_SIZE - 1; i++)
@@ -244,7 +244,7 @@ error_code cellOskDialogLoadAsync(u32 container, vm::ptr<CellOskDialogParam> dia
 
 	Emu.CallAfter([=, &result]()
 	{
-		osk->Create("On Screen Keyboard", message, osk->osk_text, maxLength, prohibitFlgs, allowOskPanelFlg, firstViewPanel);
+		osk->Create("On Screen Keyboard", message, osk->osk_text, maxLength, options);
 		result = true;
 	});
 

@@ -17,22 +17,33 @@ rsx::vertex_base_type rsx::to_vertex_base_type(u8 in)
 	fmt::throw_exception("Unknown vertex base type %d" HERE, in);
 }
 
+rsx::index_array_type rsx::to_index_array_type(u8 in)
+{
+	switch (in)
+	{
+	case 0: return rsx::index_array_type::u32;
+	case 1: return rsx::index_array_type::u16;
+	}
+	fmt::throw_exception("Unknown index array type %d" HERE, in);
+}
+
 rsx::primitive_type rsx::to_primitive_type(u8 in)
 {
 	switch (in)
 	{
-	case CELL_GCM_PRIMITIVE_POINTS: return rsx::primitive_type::points;
-	case CELL_GCM_PRIMITIVE_LINES: return rsx::primitive_type::lines;
-	case CELL_GCM_PRIMITIVE_LINE_LOOP: return rsx::primitive_type::line_loop;
-	case CELL_GCM_PRIMITIVE_LINE_STRIP: return rsx::primitive_type::line_strip;
-	case CELL_GCM_PRIMITIVE_TRIANGLES: return rsx::primitive_type::triangles;
-	case CELL_GCM_PRIMITIVE_TRIANGLE_STRIP: return rsx::primitive_type::triangle_strip;
-	case CELL_GCM_PRIMITIVE_TRIANGLE_FAN: return rsx::primitive_type::triangle_fan;
-	case CELL_GCM_PRIMITIVE_QUADS: return rsx::primitive_type::quads;
-	case CELL_GCM_PRIMITIVE_QUAD_STRIP: return rsx::primitive_type::quad_strip;
-	case CELL_GCM_PRIMITIVE_POLYGON: return rsx::primitive_type::polygon;
-	default: return rsx::primitive_type::invalid;
+	case 0: return rsx::primitive_type::invalid;
+	case 1: return rsx::primitive_type::points;
+	case 2: return rsx::primitive_type::lines;
+	case 3: return rsx::primitive_type::line_loop;
+	case 4: return rsx::primitive_type::line_strip;
+	case 5: return rsx::primitive_type::triangles;
+	case 6: return rsx::primitive_type::triangle_strip;
+	case 7: return rsx::primitive_type::triangle_fan;
+	case 8: return rsx::primitive_type::quads;
+	case 9: return rsx::primitive_type::quad_strip;
+	case 10: return rsx::primitive_type::polygon;
 	}
+	fmt::throw_exception("Unknown primitive type %d" HERE, in);
 }
 
 enum
@@ -695,6 +706,18 @@ rsx::stencil_op rsx::to_stencil_op(u16 in)
 	fmt::throw_exception("Unknown stencil op 0x%x" HERE, in);
 }
 
+enum
+{
+	CELL_GCM_FUNC_ADD = 0x8006,
+	CELL_GCM_MIN = 0x8007,
+	CELL_GCM_MAX = 0x8008,
+	CELL_GCM_FUNC_SUBTRACT = 0x800A,
+	CELL_GCM_FUNC_REVERSE_SUBTRACT = 0x800B,
+	CELL_GCM_FUNC_REVERSE_SUBTRACT_SIGNED = 0x0000F005,
+	CELL_GCM_FUNC_ADD_SIGNED = 0x0000F006,
+	CELL_GCM_FUNC_REVERSE_ADD_SIGNED = 0x0000F007,
+};
+
 rsx::blend_equation rsx::to_blend_equation(u16 in)
 {
 	switch (in)
@@ -710,6 +733,23 @@ rsx::blend_equation rsx::to_blend_equation(u16 in)
 	}
 	fmt::throw_exception("Unknown blend eq 0x%x" HERE, in);
 }
+
+enum
+{
+	CELL_GCM_SRC_COLOR = 0x0300,
+	CELL_GCM_ONE_MINUS_SRC_COLOR = 0x0301,
+	CELL_GCM_SRC_ALPHA = 0x0302,
+	CELL_GCM_ONE_MINUS_SRC_ALPHA = 0x0303,
+	CELL_GCM_DST_ALPHA = 0x0304,
+	CELL_GCM_ONE_MINUS_DST_ALPHA = 0x0305,
+	CELL_GCM_DST_COLOR = 0x0306,
+	CELL_GCM_ONE_MINUS_DST_COLOR = 0x0307,
+	CELL_GCM_SRC_ALPHA_SATURATE = 0x0308,
+	CELL_GCM_CONSTANT_COLOR = 0x8001,
+	CELL_GCM_ONE_MINUS_CONSTANT_COLOR = 0x8002,
+	CELL_GCM_CONSTANT_ALPHA = 0x8003,
+	CELL_GCM_ONE_MINUS_CONSTANT_ALPHA = 0x8004,
+};
 
 rsx::blend_factor rsx::to_blend_factor(u16 in)
 {

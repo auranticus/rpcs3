@@ -1,23 +1,8 @@
 ﻿#include "stdafx.h"
 #include "VKCommonDecompiler.h"
-
-#ifdef _MSC_VER
-#pragma warning(push, 0)
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wall"
-#pragma GCC diagnostic ignored "-Wextra"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#endif
 #include "restore_new.h"
 #include "SPIRV/GlslangToSpv.h"
 #include "define_new_memleakdetect.h"
-#include "spirv-tools/optimizer.hpp"
-#ifdef _MSC_VER
-#pragma warning(pop)
-#else
-#pragma GCC diagnostic pop
-#endif
 
 namespace vk
 {
@@ -170,7 +155,7 @@ namespace vk
 
 		shader_object.setStrings(&shader_text, 1);
 
-		EShMessages msg = static_cast<EShMessages>(EShMsgVulkanRules | EShMsgSpvRules);
+		EShMessages msg = (EShMessages)(EShMsgVulkanRules | EShMsgSpvRules);
 		if (shader_object.parse(&g_default_config, 400, EProfile::ECoreProfile, false, true, msg))
 		{
 			program.addShader(&shader_object);
@@ -178,22 +163,15 @@ namespace vk
 			if (success)
 			{
 				glslang::SpvOptions options;
-				options.disableOptimizer = true;
+				options.disableOptimizer = false;
 				options.optimizeSize = true;
 				glslang::GlslangToSpv(*program.getIntermediate(lang), spv, &options);
-
-				// Now we optimize
-				spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_0);
-				optimizer.RegisterPass(spvtools::CreateUnifyConstantPass());      // Remove duplicate constants
-				optimizer.RegisterPass(spvtools::CreateMergeReturnPass());        // Huge savings in vertex interpreter and likely normal vertex shaders
-				optimizer.RegisterPass(spvtools::CreateAggressiveDCEPass());      // Remove dead code
-				optimizer.Run(spv.data(), spv.size(), &spv);
 			}
 		}
 		else
 		{
-			rsx_log.error("%s", shader_object.getInfoLog());
-			rsx_log.error("%s", shader_object.getInfoDebugLog());
+			LOG_ERROR(RSX, "%s", shader_object.getInfoLog());
+			LOG_ERROR(RSX, "%s", shader_object.getInfoDebugLog());
 		}
 
 		return success;

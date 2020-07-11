@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Utilities/types.h"
+#include "Emu/System.h"
 
 enum : u32
 {
@@ -20,8 +21,6 @@ public:
 		SET_FREQUENCY_RATIO = 0x8, // Implements SetFrequencyRatio
 	};
 
-	AudioBackend();
-
 	virtual ~AudioBackend() = default;
 
 	/*
@@ -35,12 +34,6 @@ public:
 
 	virtual bool AddData(const void* src, u32 num_samples) = 0;
 
-
-	/*
-	 * This virtual method should be reimplemented if backend can fail to be initialized under non-error conditions
-	 * eg. when there is no audio devices attached
-	 */
-	virtual bool Initialized() const { return true; }
 
 	/*
 	 * Virtual methods - should be implemented depending on backend capabilities
@@ -96,22 +89,65 @@ public:
 	/*
 	 * Helper methods
 	 */
-	u32 get_sampling_rate() const;
+	static u32 get_sampling_rate()
+	{
+		const u32 sampling_period_multiplier_u32 = g_cfg.audio.sampling_period_multiplier;
 
-	u32 get_sample_size() const;
+		if (sampling_period_multiplier_u32 == 100)
+			return DEFAULT_AUDIO_SAMPLING_RATE;
 
-	u32 get_channels() const;
-	
-	bool get_convert_to_u16() const;
+		const f32 sampling_period_multiplier = sampling_period_multiplier_u32 / 100.0f;
+		const f32 sampling_rate_multiplier = 1.0f / sampling_period_multiplier;
+		return static_cast<u32>(DEFAULT_AUDIO_SAMPLING_RATE * sampling_rate_multiplier);
+	}
 
-	bool has_capability(u32 cap) const;
+	static u32 get_sample_size()
+	{
+		return g_cfg.audio.convert_to_u16 ? sizeof(u16) : sizeof(float);
+	}
 
-	void dump_capabilities(std::string& out) const;
+	static u32 get_channels()
+	{
+		return g_cfg.audio.downmix_to_2ch ? 2 : 8;
+	}
 
-protected:
-	bool m_convert_to_u16 = false;
-	u32 m_sample_size = sizeof(float);
-	u32 m_sampling_rate = DEFAULT_AUDIO_SAMPLING_RATE;
-	u32 m_channels = 0;
-	u32 m_start_threshold = 1;
+	bool has_capability(u32 cap) const
+	{
+		return (cap & GetCapabilities()) == cap;
+	}
+
+	void dump_capabilities(std::string& out) const
+	{
+		u32 count = 0;
+		u32 capabilities = GetCapabilities();
+
+		if (capabilities & PLAY_PAUSE_FLUSH)
+		{
+			fmt::append(out, "PLAY_PAUSE_FLUSH");
+			count++;
+		}
+
+		if (capabilities & IS_PLAYING)
+		{
+			fmt::append(out, "%sIS_PLAYING", count > 0 ? " | " : "");
+			count++;
+		}
+
+		if (capabilities & GET_NUM_ENQUEUED_SAMPLES)
+		{
+			fmt::append(out, "%sGET_NUM_ENQUEUED_SAMPLES", count > 0 ? " | " : "");
+			count++;
+		}
+
+		if (capabilities & SET_FREQUENCY_RATIO)
+		{
+			fmt::append(out, "%sSET_FREQUENCY_RATIO", count > 0 ? " | " : "");
+			count++;
+		}
+
+		if (count == 0)
+		{
+			fmt::append(out, "NONE");
+		}
+	}
 };

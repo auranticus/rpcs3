@@ -158,9 +158,8 @@ union SRC1
 		u32 swizzle_w        : 2;
 		u32 neg              : 1;
 		u32 abs              : 1;
-		u32 src0_prec_mod    : 3; // Precision modifier for src0 (many games)
-		u32 src1_prec_mod    : 3; // Precision modifier for src1 (CoD:MW series)
-		u32 src2_prec_mod    : 3; // Precision modifier for src2 (unproven, should affect MAD instruction)
+		u32 input_prec_mod   : 3; // Looks to be a precision clamping modifier affecting all inputs (tested with Dark Souls II)
+		u32                  : 6;
 		u32 scale            : 3;
 		u32 opcode_is_branch : 1;
 	};
@@ -231,7 +230,6 @@ struct RSXFragmentProgram
 	void *addr;
 	u32 offset;
 	u32 ucode_length;
-	u32 total_length;
 	u32 ctrl;
 	u16 unnormalized_coords;
 	u16 redirected_textures;
@@ -248,17 +246,11 @@ struct RSXFragmentProgram
 
 	rsx::texture_dimension_extended get_texture_dimension(u8 id) const
 	{
-		return rsx::texture_dimension_extended{static_cast<u8>((texture_dimensions >> (id * 2)) & 0x3)};
+		return (rsx::texture_dimension_extended)((texture_dimensions >> (id * 2)) & 0x3);
 	}
 
 	bool texcoord_is_2d(u8 index) const
 	{
-		return !!(texcoord_control_mask & (1u << index));
-	}
-
-	bool texcoord_is_point_coord(u8 index) const
-	{
-		index += 16;
 		return !!(texcoord_control_mask & (1u << index));
 	}
 

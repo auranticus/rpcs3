@@ -1,12 +1,13 @@
 ﻿#include "stdafx.h"
 #include "save_data_list_dialog.h"
 #include "save_data_info_dialog.h"
-#include "gui_settings.h"
 
 #include <QPushButton>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QGuiApplication>
+#include <QMenu>
+#include <QDesktopWidget>
+#include <QApplication>
 #include <QScreen>
 
 constexpr auto qstr = QString::fromStdString;
@@ -14,8 +15,7 @@ constexpr auto qstr = QString::fromStdString;
 //Show up the savedata list, either to choose one to save/load or to manage saves.
 //I suggest to use function callbacks to give save data list or get save data entry. (Not implemented or stubbed)
 save_data_list_dialog::save_data_list_dialog(const std::vector<SaveDataEntry>& entries, s32 focusedEntry, u32 op, vm::ptr<CellSaveDataListSet> listSet, QWidget* parent)
-	: QDialog(parent)
-	, m_save_entries(entries)
+	: QDialog(parent), m_save_entries(entries), m_entry(selection_code::new_save), m_entry_label(nullptr), m_sort_column(0), m_sort_ascending(true)
 {
 	if (op >= 8)
 	{
@@ -103,9 +103,9 @@ save_data_list_dialog::save_data_list_dialog(const std::vector<SaveDataEntry>& e
 
 	connect(m_list, &QTableWidget::cellChanged, [&](int row, int col)
 	{
-		const int originalIndex = m_list->item(row, 0)->data(Qt::UserRole).toInt();
-		const SaveDataEntry originalEntry = m_save_entries[originalIndex];
-		const QString originalDirName = qstr(originalEntry.dirName);
+		int originalIndex = m_list->item(row, 0)->data(Qt::UserRole).toInt();
+		SaveDataEntry originalEntry = m_save_entries[originalIndex];
+		QString originalDirName = qstr(originalEntry.dirName);
 		QVariantMap currNotes = m_gui_settings->GetValue(gui::m_saveNotes).toMap();
 		currNotes[originalDirName] = m_list->item(row, col)->text();
 		m_gui_settings->SetValue(gui::m_saveNotes, currNotes);
@@ -124,7 +124,7 @@ void save_data_list_dialog::UpdateSelectionLabel()
 		}
 		else
 		{
-			const int entry = m_list->item(m_list->currentRow(), 0)->data(Qt::UserRole).toInt();
+			int entry = m_list->item(m_list->currentRow(), 0)->data(Qt::UserRole).toInt();
 			m_entry_label->setText(tr("Currently Selected: ") + qstr(m_save_entries[entry].dirName));
 		}
 	}
@@ -132,7 +132,8 @@ void save_data_list_dialog::UpdateSelectionLabel()
 
 s32 save_data_list_dialog::GetSelection()
 {
-	if (result() == QDialog::Accepted)
+	int res = result();
+	if (res == QDialog::Accepted)
 	{
 		if (m_entry == selection_code::new_save)
 		{ // Save new entry
@@ -158,7 +159,7 @@ void save_data_list_dialog::OnSort(int logicalIndex)
 			m_sort_ascending = true;
 		}
 		m_sort_column = logicalIndex;
-		const Qt::SortOrder sort_order = m_sort_ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
+		Qt::SortOrder sort_order = m_sort_ascending ? Qt::AscendingOrder : Qt::DescendingOrder;
 		m_list->sortByColumn(m_sort_column, sort_order);
 	}
 }
@@ -166,7 +167,8 @@ void save_data_list_dialog::OnSort(int logicalIndex)
 //Display info dialog directly.
 void save_data_list_dialog::OnEntryInfo()
 {
-	if (const int idx = m_list->currentRow(); idx != -1)
+	int idx = m_list->currentRow();
+	if (idx != -1)
 	{
 		save_data_info_dialog* infoDialog = new save_data_info_dialog(m_save_entries[idx], this);
 		infoDialog->setModal(true);
@@ -177,9 +179,9 @@ void save_data_list_dialog::OnEntryInfo()
 void save_data_list_dialog::UpdateList()
 {
 	m_list->clearContents();
-	m_list->setRowCount(::narrow<int>(m_save_entries.size()));
+	m_list->setRowCount((int)m_save_entries.size());
 
-	const QVariantMap currNotes = m_gui_settings->GetValue(gui::m_saveNotes).toMap();
+	QVariantMap currNotes = m_gui_settings->GetValue(gui::m_saveNotes).toMap();
 
 	int row = 0;
 	for (const SaveDataEntry& entry: m_save_entries)
@@ -216,15 +218,15 @@ void save_data_list_dialog::UpdateList()
 	m_list->horizontalHeader()->resizeSections(QHeaderView::ResizeToContents);
 	m_list->verticalHeader()->resizeSections(QHeaderView::ResizeToContents);
 
-	const QSize table_size
+	QSize tableSize = QSize
 	(
 		m_list->verticalHeader()->width() + m_list->horizontalHeader()->length() + m_list->frameWidth() * 2,
 		m_list->horizontalHeader()->height() + m_list->verticalHeader()->length() + m_list->frameWidth() * 2
 	);
 
-	const QSize preferred_size = minimumSize().expandedTo(sizeHint() - m_list->sizeHint() + table_size);
+	QSize preferredSize = minimumSize().expandedTo(sizeHint() - m_list->sizeHint() + tableSize);
 
-	const QSize max_size(preferred_size.width(), static_cast<int>(QGuiApplication::primaryScreen()->geometry().height() * 0.6));
+	QSize maxSize = QSize(preferredSize.width(), static_cast<int>(QGuiApplication::primaryScreen()->geometry().height() * 0.6));
 
-	resize(preferred_size.boundedTo(max_size));
+	resize(preferredSize.boundedTo(maxSize));
 }

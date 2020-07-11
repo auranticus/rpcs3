@@ -42,73 +42,65 @@ struct GLTraits
 			.bind_fragment_data_location("ocol1", 1)
 			.bind_fragment_data_location("ocol2", 2)
 			.bind_fragment_data_location("ocol3", 3)
-			.link([](gl::glsl::program* program)
-			{
-				// Program locations are guaranteed to not change after linking
-				// Texture locations are simply bound to the TIUs so this can be done once
-				for (int i = 0; i < rsx::limits::fragment_textures_count; ++i)
-				{
-					int location;
-					if (program->uniforms.has_location(rsx::constants::fragment_texture_names[i], &location))
-					{
-						// Assign location to TIU
-						program->uniforms[location] = GL_FRAGMENT_TEXTURES_START + i;
+			.make();
 
-						// Check for stencil mirror
-						const std::string mirror_name = std::string(rsx::constants::fragment_texture_names[i]) + "_stencil";
-						if (program->uniforms.has_location(mirror_name, &location))
-						{
-							// Assign mirror to TIU
-							program->uniforms[location] = GL_STENCIL_MIRRORS_START + i;
-						}
-					}
-				}
-
-				for (int i = 0; i < rsx::limits::vertex_textures_count; ++i)
-				{
-					int location;
-					if (program->uniforms.has_location(rsx::constants::vertex_texture_names[i], &location))
-						program->uniforms[location] = GL_VERTEX_TEXTURES_START + i;
-				}
-
-				// Bind locations 0 and 1 to the stream buffers
-				program->uniforms[0] = GL_STREAM_BUFFER_START + 0;
-				program->uniforms[1] = GL_STREAM_BUFFER_START + 1;
-			});
-
-		if (g_cfg.video.log_programs)
+		// Progam locations are guaranteed to not change after linking
+		// Texture locations are simply bound to the TIUs so this can be done once
+		for (int i = 0; i < rsx::limits::fragment_textures_count; ++i)
 		{
-			rsx_log.notice("*** prog id = %d", result->id());
-			rsx_log.notice("*** vp id = %d", vertexProgramData.id);
-			rsx_log.notice("*** fp id = %d", fragmentProgramData.id);
-			rsx_log.notice("*** vp shader = \n%s", vertexProgramData.shader.get_source().c_str());
-			rsx_log.notice("*** fp shader = \n%s", fragmentProgramData.shader.get_source().c_str());
+			int location;
+			if (result->uniforms.has_location(rsx::constants::fragment_texture_names[i], &location))
+			{
+				// Assign location to TIU
+				result->uniforms[location] = GL_FRAGMENT_TEXTURES_START + i;
+
+				// Check for stencil mirror
+				const std::string mirror_name = std::string(rsx::constants::fragment_texture_names[i]) + "_stencil";
+				if (result->uniforms.has_location(mirror_name, &location))
+				{
+					// Assign mirror to TIU
+					result->uniforms[location] = GL_STENCIL_MIRRORS_START + i;
+				}
+			}
 		}
+
+		for (int i = 0; i < rsx::limits::vertex_textures_count; ++i)
+		{
+			int location;
+			if (result->uniforms.has_location(rsx::constants::vertex_texture_names[i], &location))
+				result->uniforms[location] = GL_VERTEX_TEXTURES_START + i;
+		}
+
+		// Bind locations 0 and 1 to the stream buffers
+		result->uniforms[0] = GL_STREAM_BUFFER_START + 0;
+		result->uniforms[1] = GL_STREAM_BUFFER_START + 1;
+
+		LOG_NOTICE(RSX, "*** prog id = %d", result->id());
+		LOG_NOTICE(RSX, "*** vp id = %d", vertexProgramData.id);
+		LOG_NOTICE(RSX, "*** fp id = %d", fragmentProgramData.id);
+
+		LOG_NOTICE(RSX, "*** vp shader = \n%s", vertexProgramData.shader.c_str());
+		LOG_NOTICE(RSX, "*** fp shader = \n%s", fragmentProgramData.shader.c_str());
 
 		return result;
 	}
 };
 
-struct GLProgramBuffer : public program_state_cache<GLTraits>
+class GLProgramBuffer : public program_state_cache<GLTraits>
 {
-	GLProgramBuffer() = default;
+public:
 
-	void initialize(decompiler_callback_t callback)
-	{
-		notify_pipeline_compiled = callback;
-	}
-
-	u64 get_hash(void* const&)
+	u64 get_hash(void*&)
 	{
 		return 0;
 	}
 
-	u64 get_hash(const RSXVertexProgram &prog)
+	u64 get_hash(RSXVertexProgram &prog)
 	{
 		return program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(prog);
 	}
 
-	u64 get_hash(const RSXFragmentProgram &prog)
+	u64 get_hash(RSXFragmentProgram &prog)
 	{
 		return program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(prog);
 	}
@@ -117,7 +109,7 @@ struct GLProgramBuffer : public program_state_cache<GLTraits>
 	void add_pipeline_entry(RSXVertexProgram &vp, RSXFragmentProgram &fp, void* &props, Args&& ...args)
 	{
 		vp.skip_vertex_input_check = true;
-		get_graphics_pipeline(vp, fp, props, false, false, std::forward<Args>(args)...);
+		get_graphics_pipeline(vp, fp, props, false, std::forward<Args>(args)...);
 	}
 
     void preload_programs(RSXVertexProgram &vp, RSXFragmentProgram &fp)
@@ -129,5 +121,10 @@ struct GLProgramBuffer : public program_state_cache<GLTraits>
 	bool check_cache_missed() const
 	{
 		return m_cache_miss_flag;
+	}
+
+	bool check_program_linked_flag() const
+	{
+		return m_program_compiled_flag;
 	}
 };

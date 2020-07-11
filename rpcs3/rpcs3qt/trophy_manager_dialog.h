@@ -1,5 +1,9 @@
 ﻿#pragma once
 
+#include "stdafx.h"
+#include "rpcs3/Loader/TROPUSR.h"
+#include "gui_settings.h"
+
 #include "Utilities/rXml.h"
 
 #include <QWidget>
@@ -9,9 +13,7 @@
 #include <QTableWidget>
 #include <QSlider>
 #include <QSplitter>
-
-class gui_settings;
-class TROPUSRLoader;
+#include <QThread>
 
 struct GameTrophiesData
 {
@@ -30,7 +32,6 @@ enum TrophyColumns
 	Type = 3,
 	IsUnlocked = 4,
 	Id = 5,
-	PlatinumLink = 6,
 
 	Count
 };
@@ -44,9 +45,21 @@ enum GameColumns
 	GameColumnsCount
 };
 
+enum TrophyThreadState
+{
+	RUNNING,
+	CLOSING,
+	CLOSED
+};
+
 class trophy_manager_dialog : public QWidget
 {
 	Q_OBJECT
+
+	const QString Bronze   = "Bronze";
+	const QString Silver   = "Silver";
+	const QString Gold     = "Gold";
+	const QString Platinum = "Platinum";
 
 public:
 	explicit trophy_manager_dialog(std::shared_ptr<gui_settings> gui_settings);
@@ -57,7 +70,7 @@ public Q_SLOTS:
 	void HandleRepaintUiRequest();
 
 private Q_SLOTS:
-	QPixmap GetResizedGameIcon(int index);
+	void ResizeGameIcon(int index);
 	void ResizeGameIcons();
 	void ResizeTrophyIcons();
 	void ApplyFilter();
@@ -69,8 +82,8 @@ private:
 	*/
 	bool LoadTrophyFolderToDB(const std::string& trop_name);
 
-	/** Populate the trophy database (multithreaded). */
-	void StartTrophyLoadThreads();
+	/** Populate the trophy database (in another thread). */
+	void StartTrophyLoadThread();
 
 	/** Fills game table with information.
 	Takes results from LoadTrophyFolderToDB and puts it into the UI.
@@ -97,6 +110,9 @@ private:
 	QTableWidget* m_trophy_table; //! UI element to display trophy stuff.
 	QTableWidget* m_game_table; //! UI element to display games.
 
+	class trophy_load_thread; //Qt cannot parse nested classes, declaration is below
+	std::atomic<TrophyThreadState> m_thread_state = TrophyThreadState::CLOSED;
+
 	bool m_show_hidden_trophies = false;
 	bool m_show_unlocked_trophies = true;
 	bool m_show_locked_trophies = true;
@@ -115,4 +131,21 @@ private:
 	bool m_save_game_icon_size = false;
 	QSlider* m_game_icon_slider = nullptr;
 	QColor m_game_icon_color;
+};
+
+class trophy_manager_dialog::trophy_load_thread : public QThread
+{
+	Q_OBJECT
+
+	public:
+		explicit trophy_load_thread(trophy_manager_dialog *manager) : m_manager(manager) {}
+		void run() override;
+
+	Q_SIGNALS:
+		void TotalCountChanged(int count);
+		void ProcessedCountChanged(int processed);
+		void FinishedSuccessfully();
+
+	private:
+		trophy_manager_dialog *m_manager;
 };

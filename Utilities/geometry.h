@@ -15,6 +15,10 @@ struct size2_base
 	{
 	}
 
+	constexpr size2_base(const size2_base& rhs) : width{ rhs.width }, height{ rhs.height }
+	{
+	}
+
 	constexpr size2_base operator -(const size2_base& rhs) const
 	{
 		return{ width - rhs.width, height - rhs.height };
@@ -97,23 +101,20 @@ struct size2_base
 		return *this;
 	}
 
-	constexpr bool operator ==(const size2_base& rhs) const
+	constexpr bool operator == (const size2_base& rhs) const
 	{
 		return width == rhs.width && height == rhs.height;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
-	constexpr bool operator !=(const size2_base& rhs) const
+	constexpr bool operator != (const size2_base& rhs) const
 	{
 		return width != rhs.width || height != rhs.height;
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator size2_base<NT>() const
+	constexpr operator size2_base<NT>() const
 	{
-		return{ static_cast<NT>(width), static_cast<NT>(height) };
+		return{ (NT)width, (NT)height };
 	}
 };
 
@@ -141,11 +142,11 @@ struct position1_base
 	template<typename RhsT>
 	position1_base operator *(RhsT rhs) const
 	{
-		return{ static_cast<T>(x * rhs) };
+		return{ T(x * rhs) };
 	}
 	position1_base operator *(const position1_base& rhs) const
 	{
-		return{ static_cast<T>(x * rhs.x) };
+		return{ T(x * rhs.x) };
 	}
 	template<typename RhsT>
 	position1_base operator /(RhsT rhs) const
@@ -211,8 +212,6 @@ struct position1_base
 		return x == rhs;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	bool operator !=(const position1_base& rhs) const
 	{
 		return !(*this == rhs);
@@ -222,12 +221,11 @@ struct position1_base
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit operator position1_base<NT>() const
+	operator position1_base<NT>() const
 	{
-		return{ static_cast<NT>(x) };
+		return{ (NT)x };
 	}
 
 	double distance(const position1_base& to)
@@ -246,6 +244,10 @@ struct position2_base
 	}
 
 	constexpr position2_base(T x, T y) : x{ x }, y{ y }
+	{
+	}
+
+	constexpr position2_base(const position2_base& rhs) : x{ rhs.x }, y{ rhs.y }
 	{
 	}
 
@@ -301,11 +303,11 @@ struct position2_base
 	template<typename RhsT>
 	constexpr position2_base operator *(RhsT rhs) const
 	{
-		return{ static_cast<T>(x * rhs), static_cast<T>(y * rhs) };
+		return{ T(x * rhs), T(y * rhs) };
 	}
 	constexpr position2_base operator *(const position2_base& rhs) const
 	{
-		return{ static_cast<T>(x * rhs.x),  static_cast<T>(y * rhs.y) };
+		return{ T(x * rhs.x),  T(y * rhs.y) };
 	}
 	template<typename RhsT>
 	constexpr position2_base operator /(RhsT rhs) const
@@ -383,8 +385,6 @@ struct position2_base
 		return x == rhs && y == rhs;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator !=(const position2_base& rhs) const
 	{
 		return !(*this == rhs);
@@ -394,17 +394,16 @@ struct position2_base
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator position2_base<NT>() const
+	constexpr operator position2_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y) };
+		return{ (NT)x, (NT)y };
 	}
 
 	double distance(const position2_base& to) const
 	{
-		return std::sqrt((x - to.x) * (x - to.x) + (y - to.y) * (y - to.y));
+		return std::sqrt(double((x - to.x) * (x - to.x) + (y - to.y) * (y - to.y)));
 	}
 };
 
@@ -478,8 +477,6 @@ struct position3_base
 		return x == rhs && y == rhs && z == rhs;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	bool operator !=(const position3_base& rhs) const
 	{
 		return !(*this == rhs);
@@ -489,12 +486,11 @@ struct position3_base
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit operator position3_base<NT>() const
+	operator position3_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(z) };
+		return{ (NT)x, (NT)y, (NT)z };
 	}
 };
 
@@ -571,8 +567,6 @@ struct position4_base
 		return x == rhs && y == rhs && z == rhs && w == rhs;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator !=(const position4_base& rhs) const
 	{
 		return !(*this == rhs);
@@ -582,12 +576,11 @@ struct position4_base
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator position4_base<NT>() const
+	constexpr operator position4_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(z), static_cast<NT>(w) };
+		return{ (NT)x, (NT)y, (NT)z, (NT)w };
 	}
 };
 
@@ -610,11 +603,23 @@ struct coord_base
 	};
 
 	constexpr coord_base() : position{}, size{}
+#ifdef _MSC_VER
+		//compiler error
+		, x{}, y{}, width{}, height{}
+#endif
 	{
 	}
 
 	constexpr coord_base(const position_base<T>& position, const size2_base<T>& size)
 		: position{ position }, size{ size }
+#ifdef _MSC_VER
+		, x{ position.x }, y{ position.y }, width{ size.width }, height{ size.height }
+#endif
+	{
+	}
+
+	constexpr coord_base(const coord_base<T>& other)
+		: position{ other.position }, size{ other.size }
 	{
 	}
 
@@ -639,18 +644,15 @@ struct coord_base
 		return position == rhs.position && size == rhs.size;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator != (const coord_base& rhs) const
 	{
 		return position != rhs.position || size != rhs.size;
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator coord_base<NT>() const
+	constexpr operator coord_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(width), static_cast<NT>(height) };
+		return{ (NT)x, (NT)y, (NT)width, (NT)height };
 	}
 };
 
@@ -718,13 +720,10 @@ struct area_base
 		return x1 == rhs.x1 && x2 == rhs.x2 && y1 == rhs.y1 && y2 == rhs.y2;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator != (const area_base& rhs) const
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	constexpr area_base operator - (const size2_base<T>& size) const
 	{
@@ -756,13 +755,13 @@ struct area_base
 	}
 	constexpr area_base operator * (const f32& value) const
 	{
-		return{ static_cast<T>(x1 * value), static_cast<T>(y1 * value), static_cast<T>(x2 * value), static_cast<T>(y2 * value) };
+		return{ (T)(x1 * value), (T)(y1 * value), (T)(x2 * value), (T)(y2 * value) };
 	}
 
 	template<typename NT>
-	explicit constexpr operator area_base<NT>() const
+	constexpr operator area_base<NT>() const
 	{
-		return{ static_cast<NT>(x1), static_cast<NT>(y1), static_cast<NT>(x2), static_cast<NT>(y2) };
+		return{ (NT)x1, (NT)y1, (NT)x2, (NT)y2 };
 	}
 };
 
@@ -770,6 +769,15 @@ template<typename T>
 struct size3_base
 {
 	T width, height, depth;
+	/*
+	size3_base() : width{}, height{}, depth{}
+	{
+	}
+
+	size3_base(T width, T height, T depth) : width{ width }, height{ height }, depth{ depth }
+	{
+	}
+	*/
 };
 
 template<typename T>
@@ -814,9 +822,9 @@ struct coord3_base
 	}
 
 	template<typename NT>
-	explicit constexpr operator coord3_base<NT>() const
+	constexpr operator coord3_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(z), static_cast<NT>(width), static_cast<NT>(height), static_cast<NT>(depth) };
+		return{ (NT)x, (NT)y, (NT)z, (NT)width, (NT)height, (NT)depth };
 	}
 };
 
@@ -848,7 +856,7 @@ struct color4_base
 	{
 	}
 
-	constexpr color4_base(T x, T y, T z, T w)
+	constexpr color4_base(T x, T y = {}, T z = {}, T w = {})
 		: x(x)
 		, y(y)
 		, z(z)
@@ -856,61 +864,20 @@ struct color4_base
 	{
 	}
 
-	constexpr color4_base(T value)
-		: x(value)
-		, y(value)
-		, z(value)
-		, w(value)
-	{
-	}
-
 	constexpr bool operator == (const color4_base& rhs) const
 	{
 		return r == rhs.r && g == rhs.g && b == rhs.b && a == rhs.a;
 	}
-#if __cpp_impl_three_way_comparison >= 201711
-#else
+
 	constexpr bool operator != (const color4_base& rhs) const
 	{
 		return !(*this == rhs);
 	}
-#endif
-
-	void operator *= (const color4_base<T>& rhs)
-	{
-		r *= rhs.r;
-		g *= rhs.g;
-		b *= rhs.b;
-		a *= rhs.a;
-	}
-
-	void operator *= (const T& rhs)
-	{
-		r *= rhs;
-		g *= rhs;
-		b *= rhs;
-		a *= rhs;
-	}
-
-	constexpr color4_base<T> operator * (const color4_base<T>& rhs) const
-	{
-		return { r * rhs.r, g * rhs.g, b * rhs.b, a * rhs.a };
-	}
-
-	constexpr color4_base<T> operator * (const T& rhs) const
-	{
-		return { r * rhs, g * rhs, b * rhs, a * rhs };
-	}
-
-	constexpr color4_base<T> operator + (const color4_base<T>& rhs) const
-	{
-		return { r + rhs.r, g + rhs.g, b + rhs.b, a + rhs.a };
-	}
 
 	template<typename NT>
-	explicit constexpr operator color4_base<NT>() const
+	constexpr operator color4_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(z), static_cast<NT>(w) };
+		return{ (NT)x, (NT)y, (NT)z, (NT)w };
 	}
 };
 
@@ -944,18 +911,16 @@ struct color3_base
 	{
 		return r == rhs.r && g == rhs.g && b == rhs.b;
 	}
-#if __cpp_impl_three_way_comparison >= 201711
-#else
+
 	constexpr bool operator != (const color3_base& rhs) const
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator color3_base<NT>() const
+	constexpr operator color3_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y), static_cast<NT>(z) };
+		return{ (NT)x, (NT)y, (NT)z };
 	}
 };
 
@@ -989,18 +954,15 @@ struct color2_base
 		return r == rhs.r && g == rhs.g;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator != (const color2_base& rhs) const
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator color2_base<NT>() const
+	constexpr operator color2_base<NT>() const
 	{
-		return{ static_cast<NT>(x), static_cast<NT>(y) };
+		return{ (NT)x, (NT)y };
 	}
 };
 
@@ -1023,18 +985,15 @@ struct color1_base
 		return r == rhs.r;
 	}
 
-#if __cpp_impl_three_way_comparison >= 201711
-#else
 	constexpr bool operator != (const color1_base& rhs) const
 	{
 		return !(*this == rhs);
 	}
-#endif
 
 	template<typename NT>
-	explicit constexpr operator color1_base<NT>() const
+	constexpr operator color1_base<NT>() const
 	{
-		return{ static_cast<NT>(x) };
+		return{ (NT)x };
 	}
 };
 

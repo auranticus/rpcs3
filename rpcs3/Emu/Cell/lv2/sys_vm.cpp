@@ -1,17 +1,13 @@
 ﻿#include "stdafx.h"
 #include "sys_vm.h"
-
-#include "Emu/IdManager.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Memory/vm_locking.h"
 
-extern u64 get_timebased_time();
-
 sys_vm_t::sys_vm_t(u32 _addr, u32 vsize, lv2_memory_container* ct, u32 psize)
 	: ct(ct)
+	, psize(psize)
 	, addr(_addr)
 	, size(vsize)
-	, psize(psize)
 {
 	// Write ID
 	g_ids[addr >> 28].release(idm::last_id());
@@ -19,23 +15,21 @@ sys_vm_t::sys_vm_t(u32 _addr, u32 vsize, lv2_memory_container* ct, u32 psize)
 
 sys_vm_t::~sys_vm_t()
 {
-	// Debug build : gcc and clang can not find the static var if retrieved directly in "release" function
-	constexpr auto invalid = id_manager::id_traits<sys_vm_t>::invalid;
-
 	// Free ID
-	g_ids[addr >> 28].release(invalid);
+	g_ids[addr >> 28].release(id_manager::id_traits<sys_vm_t>::invalid);
+
+	// Free block
+	verify(HERE), vm::unmap(addr);
+
+	// Return memory
+	ct->used -= psize;
 }
 
 LOG_CHANNEL(sys_vm);
 
-struct sys_vm_global_t
-{
-	atomic_t<u32> total_vsize = 0;
-};
-
 error_code sys_vm_memory_map(ppu_thread& ppu, u32 vsize, u32 psize, u32 cid, u64 flag, u64 policy, vm::ptr<u32> addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.error("sys_vm_memory_map(vsize=0x%x, psize=0x%x, cid=0x%x, flags=0x%llx, policy=0x%llx, addr=*0x%x)", vsize, psize, cid, flag, policy, addr);
 
@@ -53,24 +47,8 @@ error_code sys_vm_memory_map(ppu_thread& ppu, u32 vsize, u32 psize, u32 cid, u64
 		return CELL_ESRCH;
 	}
 
-	if (!g_fxo->get<sys_vm_global_t>()->total_vsize.fetch_op([vsize](u32& size)
-	{
-		// A single process can hold up to 256MB of virtual memory, even on DECR
-		if (0x10000000 - size < vsize)
-		{
-			return false;
-		}
-
-		size += vsize;
-		return true;
-	}).second)
-	{
-		return CELL_EBUSY;
-	}
-
 	if (!ct->take(psize))
 	{
-		g_fxo->get<sys_vm_global_t>()->total_vsize -= vsize;
 		return CELL_ENOMEM;
 	}
 
@@ -88,13 +66,12 @@ error_code sys_vm_memory_map(ppu_thread& ppu, u32 vsize, u32 psize, u32 cid, u64
 	}
 
 	ct->used -= psize;
-	g_fxo->get<sys_vm_global_t>()->total_vsize -= vsize;
 	return CELL_ENOMEM;
 }
 
 error_code sys_vm_memory_map_different(ppu_thread& ppu, u32 vsize, u32 psize, u32 cid, u64 flag, u64 policy, vm::ptr<u32> addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_memory_map_different(vsize=0x%x, psize=0x%x, cid=0x%x, flags=0x%llx, policy=0x%llx, addr=*0x%x)", vsize, psize, cid, flag, policy, addr);
 	// TODO: if needed implement different way to map memory, unconfirmed.
@@ -104,7 +81,7 @@ error_code sys_vm_memory_map_different(ppu_thread& ppu, u32 vsize, u32 psize, u3
 
 error_code sys_vm_unmap(ppu_thread& ppu, u32 addr)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_unmap(addr=0x%x)", addr);
 
@@ -115,17 +92,7 @@ error_code sys_vm_unmap(ppu_thread& ppu, u32 addr)
 	}
 
 	// Free block and info
-	const auto vmo = idm::withdraw<sys_vm_t>(sys_vm_t::find_id(addr), [&](sys_vm_t& vmo)
-	{
-		// Free block
-		verify(HERE), vm::unmap(addr);
-
-		// Return memory
-		vmo.ct->used -= vmo.psize;
-		g_fxo->get<sys_vm_global_t>()->total_vsize -= vmo.size;
-	});
-
-	if (!vmo)
+	if (!idm::remove<sys_vm_t>(sys_vm_t::find_id(addr)))
 	{
 		return CELL_EINVAL;
 	}
@@ -135,7 +102,7 @@ error_code sys_vm_unmap(ppu_thread& ppu, u32 addr)
 
 error_code sys_vm_append_memory(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_append_memory(addr=0x%x, size=0x%x)", addr, size);
 
@@ -144,38 +111,27 @@ error_code sys_vm_append_memory(ppu_thread& ppu, u32 addr, u32 size)
 		return CELL_EINVAL;
 	}
 
-	const auto block = idm::check<sys_vm_t>(sys_vm_t::find_id(addr), [&](sys_vm_t& vmo) -> CellError
-	{
-		if (vmo.addr != addr)
-		{
-			return CELL_EINVAL;
-		}
+	const auto block = idm::get<sys_vm_t>(sys_vm_t::find_id(addr));
 
-		if (!vmo.ct->take(size))
-		{
-			return CELL_ENOMEM;
-		}
-
-		vmo.psize += size;
-		return {};
-	});
-
-	if (!block)
+	if (!block || block->addr != addr)
 	{
 		return CELL_EINVAL;
 	}
 
-	if (block.ret)
+	std::lock_guard lock(block->mutex);
+
+	if (!block->ct->take(size))
 	{
-		return block.ret;
+		return CELL_ENOMEM;
 	}
 
+	block->psize += size;
 	return CELL_OK;
 }
 
 error_code sys_vm_return_memory(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_return_memory(addr=0x%x, size=0x%x)", addr, size);
 
@@ -184,49 +140,28 @@ error_code sys_vm_return_memory(ppu_thread& ppu, u32 addr, u32 size)
 		return CELL_EINVAL;
 	}
 
-	const auto block = idm::check<sys_vm_t>(sys_vm_t::find_id(addr), [&](sys_vm_t& vmo) -> CellError
-	{
-		if (vmo.addr != addr)
-		{
-			return CELL_EINVAL;
-		}
+	const auto block = idm::get<sys_vm_t>(sys_vm_t::find_id(addr));
 
-		auto [_, ok] = vmo.psize.fetch_op([&](u32& value)
-		{
-			if (value < 0x100000ull + size)
-			{
-				return false;
-			}
-
-			value -= size;
-			return true;
-		});
-
-		if (!ok)
-		{
-			return CELL_EBUSY;
-		}
-
-		vmo.ct->used -= size;
-		return {};
-	});
-
-	if (!block)
+	if (!block || block->addr != addr)
 	{
 		return CELL_EINVAL;
 	}
 
-	if (block.ret)
+	std::lock_guard lock(block->mutex);
+
+	if (u64{block->psize} < u64{0x100000} + size)
 	{
-		return block.ret;
+		return CELL_EBUSY;
 	}
 
+	block->psize -= size;
+	block->ct->used -= size;
 	return CELL_OK;
 }
 
 error_code sys_vm_lock(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_lock(addr=0x%x, size=0x%x)", addr, size);
 
@@ -247,7 +182,7 @@ error_code sys_vm_lock(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_unlock(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_unlock(addr=0x%x, size=0x%x)", addr, size);
 
@@ -268,7 +203,7 @@ error_code sys_vm_unlock(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_touch(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_touch(addr=0x%x, size=0x%x)", addr, size);
 
@@ -289,7 +224,7 @@ error_code sys_vm_touch(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_flush(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_flush(addr=0x%x, size=0x%x)", addr, size);
 
@@ -310,7 +245,7 @@ error_code sys_vm_flush(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_invalidate(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_invalidate(addr=0x%x, size=0x%x)", addr, size);
 
@@ -331,7 +266,7 @@ error_code sys_vm_invalidate(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_store(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_store(addr=0x%x, size=0x%x)", addr, size);
 
@@ -352,7 +287,7 @@ error_code sys_vm_store(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_sync(ppu_thread& ppu, u32 addr, u32 size)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_sync(addr=0x%x, size=0x%x)", addr, size);
 
@@ -373,7 +308,7 @@ error_code sys_vm_sync(ppu_thread& ppu, u32 addr, u32 size)
 
 error_code sys_vm_test(ppu_thread& ppu, u32 addr, u32 size, vm::ptr<u64> result)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_test(addr=0x%x, size=0x%x, result=*0x%x)", addr, size, result);
 
@@ -391,7 +326,7 @@ error_code sys_vm_test(ppu_thread& ppu, u32 addr, u32 size, vm::ptr<u64> result)
 
 error_code sys_vm_get_statistics(ppu_thread& ppu, u32 addr, vm::ptr<sys_vm_statistics_t> stat)
 {
-	ppu.state += cpu_flag::wait;
+	vm::temporary_unlock(ppu);
 
 	sys_vm.warning("sys_vm_get_statistics(addr=0x%x, stat=*0x%x)", addr, stat);
 
@@ -408,7 +343,7 @@ error_code sys_vm_get_statistics(ppu_thread& ppu, u32 addr, vm::ptr<sys_vm_stati
 	stat->page_out = 0;
 	stat->pmem_total = block->psize;
 	stat->pmem_used = 0;
-	stat->timestamp = get_timebased_time();
+	stat->timestamp = 0;
 
 	return CELL_OK;
 }

@@ -1,9 +1,6 @@
-﻿#include "breakpoint_list.h"
-#include "breakpoint_handler.h"
+#include "breakpoint_list.h"
 
-#include "Emu/CPU/CPUDisAsm.h"
 #include "Emu/Cell/SPUThread.h"
-#include "Emu/Cell/PPUThread.h"
 
 #include <QMenu>
 
@@ -79,8 +76,6 @@ void breakpoint_list::AddBreakpoint(u32 pc)
 	pcVariant.setValue(pc);
 	breakpointItem->setData(Qt::UserRole, pcVariant);
 	addItem(breakpointItem);
-
-	Q_EMIT RequestShowAddress(pc);
 }
 
 /**
@@ -132,7 +127,7 @@ void breakpoint_list::OnBreakpointListRightClicked(const QPoint &pos)
 
 	menu->addAction(m_breakpoint_list_delete);
 
-	QAction* selectedItem = menu->exec(viewport()->mapToGlobal(pos));
+	QAction* selectedItem = menu->exec(QCursor::pos());
 	if (selectedItem)
 	{
 		if (selectedItem->text() == "Rename")

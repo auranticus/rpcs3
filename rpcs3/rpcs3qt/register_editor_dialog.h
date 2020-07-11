@@ -1,13 +1,19 @@
-﻿#pragma once
+#pragma once
 
 #include "stdafx.h"
+#include "Emu/System.h"
+#include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/CPUDisAsm.h"
+#include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUThread.h"
 
 #include <QDialog>
 #include <QComboBox>
+#include <QLabel>
+#include <QHBoxLayout>
 #include <QLineEdit>
-
-class CPUDisAsm;
-class cpu_thread;
+#include <QPushButton>
+#include <QMessageBox>
 
 class register_editor_dialog : public QDialog
 {

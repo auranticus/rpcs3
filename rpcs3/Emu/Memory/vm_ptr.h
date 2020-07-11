@@ -5,7 +5,6 @@
 #include "vm.h"
 
 class ppu_thread;
-struct ppu_func_opd_t;
 
 namespace vm
 {
@@ -61,7 +60,7 @@ namespace vm
 
 		explicit operator bool() const
 		{
-			return m_addr != 0u;
+			return m_addr != 0;
 		}
 
 		// Get vm pointer to a struct member
@@ -121,7 +120,7 @@ namespace vm
 		// Test address for arbitrary alignment: (addr & (align - 1)) == 0
 		bool aligned(u32 align = alignof(T)) const
 		{
-			return (m_addr & (align - 1)) == 0u;
+			return (m_addr & (align - 1)) == 0;
 		}
 
 		// Get type size
@@ -200,16 +199,6 @@ namespace vm
 			m_addr = vm::cast(m_addr, HERE) - count * size();
 			return *this;
 		}
-
-		bool try_read(std::conditional_t<std::is_void_v<T>, char&, std::add_lvalue_reference_t<std::remove_const_t<T>>> out) const
-		{
-			return vm::try_access(vm::cast(m_addr, HERE), &out, sizeof(T), false);
-		}
-
-		bool try_write(std::conditional_t<std::is_void_v<T>, const char&, std::add_lvalue_reference_t<const T>> _in) const
-		{
-			return vm::try_access(vm::cast(m_addr, HERE), const_cast<T*>(&_in), sizeof(T), true);
-		}
 	};
 
 	template<typename AT, typename RT, typename... T>
@@ -253,7 +242,7 @@ namespace vm
 
 		explicit operator bool() const
 		{
-			return m_addr != 0u;
+			return m_addr != 0;
 		}
 
 		_ptr_base<RT(T...), u32> operator +() const
@@ -263,7 +252,6 @@ namespace vm
 
 		// Callback; defined in PPUCallback.h, passing context is mandatory
 		RT operator()(ppu_thread& ppu, T... args) const;
-		const ppu_func_opd_t& opd() const;
 	};
 
 	template<typename AT, typename RT, typename... T>

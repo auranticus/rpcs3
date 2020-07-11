@@ -1,26 +1,15 @@
-﻿#pragma once
+#pragma once
 #include "../Common/FragmentProgramDecompiler.h"
-#include "../Common/GLSLTypes.h"
 #include "Emu/RSX/RSXFragmentProgram.h"
 #include "VulkanAPI.h"
 #include "VKHelpers.h"
 
-namespace vk
-{
-	class shader_interpreter;
-}
-
 struct VKFragmentDecompilerThread : public FragmentProgramDecompiler
 {
-	friend class vk::shader_interpreter;
-
 	std::string& m_shader;
 	ParamArray& m_parrDummy;
 	std::vector<vk::glsl::program_input> inputs;
 	class VKFragmentProgram *vk_prog;
-	glsl::shader_properties m_shader_props{};
-	vk::pipeline_binding_table m_binding_table{};
-
 public:
 	VKFragmentDecompilerThread(std::string& shader, ParamArray& parr, const RSXFragmentProgram &prog, u32& size, class VKFragmentProgram& dst)
 		: FragmentProgramDecompiler(prog, size)

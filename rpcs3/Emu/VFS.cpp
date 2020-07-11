@@ -6,10 +6,6 @@
 #include "Utilities/mutex.h"
 #include "Utilities/StrUtil.h"
 
-#ifdef _WIN32
-#include <Windows.h>
-#endif
-
 struct vfs_directory
 {
 	// Real path (empty if root or not exists)
@@ -29,8 +25,11 @@ struct vfs_manager
 
 bool vfs::mount(std::string_view vpath, std::string_view path)
 {
-	// Workaround
-	g_fxo->need<vfs_manager>();
+	if (!g_fxo->get<vfs_manager>())
+	{
+		// Init (TODO)
+		g_fxo->init<vfs_manager>();
+	}
 
 	const auto table = g_fxo->get<vfs_manager>();
 
@@ -55,7 +54,7 @@ bool vfs::mount(std::string_view vpath, std::string_view path)
 			return false;
 		}
 
-		if (pos == umax)
+		if (pos == -1)
 		{
 			// Mounting completed
 			list.back()->path = path;
@@ -81,7 +80,7 @@ bool vfs::mount(std::string_view vpath, std::string_view path)
 			}
 
 			// Go back one level
-			list.pop_back();
+			list.resize(list.size() - 1);
 			continue;
 		}
 
@@ -105,7 +104,7 @@ bool vfs::mount(std::string_view vpath, std::string_view path)
 	}
 }
 
-std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, std::string* out_path)
+std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir)
 {
 	const auto table = g_fxo->get<vfs_manager>();
 
@@ -124,14 +123,6 @@ std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, 
 		vpath = ".";
 	}
 
-	// Fragments for out_path
-	std::vector<std::string_view> name_list;
-
-	if (out_path)
-	{
-		name_list.reserve(vpath.size() / 2);
-	}
-
 	for (std::vector<const vfs_directory*> list{&table->root};;)
 	{
 		// Skip one or more '/'
@@ -143,7 +134,7 @@ std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, 
 			return fs::get_config_dir() + "delete_this_dir.../delete_this...";
 		}
 
-		if (pos == umax)
+		if (pos == -1)
 		{
 			// Absolute path: finalize
 			for (auto it = list.rbegin(), rend = list.rend(); it != rend; it++)
@@ -201,23 +192,13 @@ std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, 
 			}
 
 			// Go back one level
-			if (out_path)
-			{
-				name_list.pop_back();
-			}
-
-			list.pop_back();
-			result.pop_back();
+			list.resize(list.size() - 1);
+			result.resize(result.size() - 1);
 			continue;
 		}
 
 		const auto last = list.back();
 		list.push_back(nullptr);
-
-		if (out_path)
-		{
-			name_list.push_back(name);
-		}
 
 		result.push_back(name);
 
@@ -234,19 +215,12 @@ std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, 
 
 				if (dir.second.path == "/"sv)
 				{
-					if (vpath.size() <= 1)
+					if (vpath.empty())
 					{
-						return fs::get_config_dir() + "delete_this_dir.../delete_this...";
+						return {};
 					}
 
 					// Handle /host_root (not escaped, not processed)
-					if (out_path)
-					{
-						*out_path =  "/";
-						*out_path += fmt::merge(name_list, "/");
-						*out_path += vpath;
-					}
-
 					return std::string{vpath.substr(1)};
 				}
 
@@ -261,96 +235,18 @@ std::string vfs::get(std::string_view vpath, std::vector<std::string>* out_dir, 
 		return {};
 	}
 
-	// Merge path fragments
-	if (out_path)
-	{
-		*out_path =  "/";
-		*out_path += fmt::merge(name_list, "/");
-	}
-
-	// Escape for host FS
-	std::vector<std::string> escaped;
-	escaped.reserve(result.size());
-	for (auto& sv : result)
-		escaped.emplace_back(vfs::escape(sv));
-
-	return std::string{result_base} + fmt::merge(escaped, "/");
+	// Escape and merge path fragments
+	return std::string{result_base} + vfs::escape(fmt::merge(result, "/"));
 }
 
-#if __cpp_char8_t >= 201811
-using char2 = char8_t;
-#else
-using char2 = char;
-#endif
-
-std::string vfs::escape(std::string_view name, bool escape_slash)
+std::string vfs::escape(std::string_view path)
 {
 	std::string result;
+	result.reserve(path.size());
 
-	if (name.size() > 2 && name.find_first_not_of('.') == umax)
+	for (std::size_t i = 0, s = path.size(); i < s; i++)
 	{
-		// Name contains only dots, not allowed on Windows.
-		result.reserve(name.size() + 2);
-		result += reinterpret_cast<const char*>(u8"．");
-		result += name.substr(1);
-		return result;
-	}
-
-	// Emulate NTS (limited)
-	auto get_char = [&](std::size_t pos) -> char2
-	{
-		if (pos < name.size())
-		{
-			return name[pos];
-		}
-		else
-		{
-			return '\0';
-		}
-	};
-
-	// Escape NUL, LPT ant other trash
-	if (name.size() > 2)
-	{
-		// Pack first 3 characters
-		const u32 triple = std::bit_cast<le_t<u32>, u32>(toupper(name[0]) | toupper(name[1]) << 8 | toupper(name[2]) << 16);
-
-		switch (triple)
-		{
-		case "COM"_u32:
-		case "LPT"_u32:
-		{
-			if (name.size() >= 4 && name[3] >= '1' && name[4] <= '9')
-			{
-				if (name.size() == 4 || name[4] == '.')
-				{
-					// Escape first character (C or L)
-					result = reinterpret_cast<const char*>(u8"！");
-				}
-			}
-
-			break;
-		}
-		case "NUL"_u32:
-		case "CON"_u32:
-		case "AUX"_u32:
-		case "PRN"_u32:
-		{
-			if (name.size() == 3 || name[3] == '.')
-			{
-				result = reinterpret_cast<const char*>(u8"！");
-			}
-
-			break;
-		}
-		}
-	}
-
-	result.reserve(result.size() + name.size());
-
-	for (std::size_t i = 0, s = name.size(); i < s; i++)
-	{
-		switch (char2 c = name[i])
+		switch (char c = path[i])
 		{
 		case 0:
 		case 1:
@@ -363,7 +259,7 @@ std::string vfs::escape(std::string_view name, bool escape_slash)
 		case 8:
 		case 9:
 		{
-			result += reinterpret_cast<const char*>(u8"０");
+			result += u8"０";
 			result.back() += c;
 			break;
 		}
@@ -390,85 +286,74 @@ std::string vfs::escape(std::string_view name, bool escape_slash)
 		case 30:
 		case 31:
 		{
-			result += reinterpret_cast<const char*>(u8"Ａ");
+			result += u8"Ａ";
 			result.back() += c;
 			result.back() -= 10;
 			break;
 		}
 		case '<':
 		{
-			result += reinterpret_cast<const char*>(u8"＜");
+			result += u8"＜";
 			break;
 		}
 		case '>':
 		{
-			result += reinterpret_cast<const char*>(u8"＞");
+			result += u8"＞";
 			break;
 		}
 		case ':':
 		{
-			result += reinterpret_cast<const char*>(u8"：");
+			result += u8"：";
 			break;
 		}
 		case '"':
 		{
-			result += reinterpret_cast<const char*>(u8"＂");
+			result += u8"＂";
 			break;
 		}
 		case '\\':
 		{
-			result += reinterpret_cast<const char*>(u8"＼");
+			result += u8"＼";
 			break;
 		}
 		case '|':
 		{
-			result += reinterpret_cast<const char*>(u8"｜");
+			result += u8"｜";
 			break;
 		}
 		case '?':
 		{
-			result += reinterpret_cast<const char*>(u8"？");
+			result += u8"？";
 			break;
 		}
 		case '*':
 		{
-			result += reinterpret_cast<const char*>(u8"＊");
+			result += u8"＊";
 			break;
 		}
-		case '/':
-		{
-			if (escape_slash)
-			{
-				result += reinterpret_cast<const char*>(u8"／");
-				break;
-			}
-
-			result += c;
-			break;
-		}
-		case char2{u8"！"[0]}:
+		case char{u8"！"[0]}:
 		{
 			// Escape full-width characters 0xFF01..0xFF5e with ！ (0xFF01)
-			switch (char2 c2 = get_char(i + 1))
+			switch (path[i + 1])
 			{
-			case char2{u8"！"[1]}:
+			case char{u8"！"[1]}:
 			{
-				const uchar c3 = get_char(i + 2);
+				const uchar c3 = reinterpret_cast<const uchar&>(path[i + 2]);
 
 				if (c3 >= 0x81 && c3 <= 0xbf)
 				{
-					result += reinterpret_cast<const char*>(u8"！");
+					result += u8"！";
 				}
 
 				break;
 			}
-			case char2{u8"｀"[1]}:
+			case char{u8"｀"[1]}:
 			{
-				const uchar c3 = get_char(i + 2);
+				const uchar c3 = reinterpret_cast<const uchar&>(path[i + 2]);
 
 				if (c3 >= 0x80 && c3 <= 0x9e)
 				{
-					result += reinterpret_cast<const char*>(u8"！");
+					result += u8"！";
 				}
 
 				break;
@@ -489,139 +374,112 @@ std::string vfs::escape(std::string_view name, bool escape_slash)
 	return result;
 }
 
-std::string vfs::unescape(std::string_view name)
+std::string vfs::unescape(std::string_view path)
 {
 	std::string result;
-	result.reserve(name.size());
+	result.reserve(path.size());
 
-	// Emulate NTS
-	auto get_char = [&](std::size_t pos) -> char2
+	for (std::size_t i = 0, s = path.size(); i < s; i++)
 	{
-		if (pos < name.size())
+		switch (char c = path[i])
 		{
-			return name[pos];
-		}
-		else
+		case char{u8"！"[0]}:
 		{
-			return '\0';
-		}
-	};
-
-	for (std::size_t i = 0, s = name.size(); i < s; i++)
-	{
-		switch (char2 c = name[i])
-		{
-		case char2{u8"！"[0]}:
-		{
-			switch (char2 c2 = get_char(i + 1))
+			switch (path[i + 1])
 			{
-			case char2{u8"！"[1]}:
+			case char{u8"！"[1]}:
 			{
-				const uchar c3 = get_char(i + 2);
+				const uchar c3 = reinterpret_cast<const uchar&>(path[i + 2]);
 
 				if (c3 >= 0x81 && c3 <= 0xbf)
 				{
-					switch (static_cast<char2>(c3))
+					switch (path[i + 2])
 					{
-					case char2{u8"０"[2]}:
-					case char2{u8"１"[2]}:
-					case char2{u8"２"[2]}:
-					case char2{u8"３"[2]}:
-					case char2{u8"４"[2]}:
-					case char2{u8"５"[2]}:
-					case char2{u8"６"[2]}:
-					case char2{u8"７"[2]}:
-					case char2{u8"８"[2]}:
-					case char2{u8"９"[2]}:
+					case char{u8"０"[2]}:
+					case char{u8"１"[2]}:
+					case char{u8"２"[2]}:
+					case char{u8"３"[2]}:
+					case char{u8"４"[2]}:
+					case char{u8"５"[2]}:
+					case char{u8"６"[2]}:
+					case char{u8"７"[2]}:
+					case char{u8"８"[2]}:
+					case char{u8"９"[2]}:
 					{
-						result += static_cast<char>(c3);
+						result += path[i + 2];
 						result.back() -= u8"０"[2];
 						continue;
 					}
-					case char2{u8"Ａ"[2]}:
-					case char2{u8"Ｂ"[2]}:
-					case char2{u8"Ｃ"[2]}:
-					case char2{u8"Ｄ"[2]}:
-					case char2{u8"Ｅ"[2]}:
-					case char2{u8"Ｆ"[2]}:
-					case char2{u8"Ｇ"[2]}:
-					case char2{u8"Ｈ"[2]}:
-					case char2{u8"Ｉ"[2]}:
-					case char2{u8"Ｊ"[2]}:
-					case char2{u8"Ｋ"[2]}:
-					case char2{u8"Ｌ"[2]}:
-					case char2{u8"Ｍ"[2]}:
-					case char2{u8"Ｎ"[2]}:
-					case char2{u8"Ｏ"[2]}:
-					case char2{u8"Ｐ"[2]}:
-					case char2{u8"Ｑ"[2]}:
-					case char2{u8"Ｒ"[2]}:
-					case char2{u8"Ｓ"[2]}:
-					case char2{u8"Ｔ"[2]}:
-					case char2{u8"Ｕ"[2]}:
-					case char2{u8"Ｖ"[2]}:
+					case char{u8"Ａ"[2]}:
+					case char{u8"Ｂ"[2]}:
+					case char{u8"Ｃ"[2]}:
+					case char{u8"Ｄ"[2]}:
+					case char{u8"Ｅ"[2]}:
+					case char{u8"Ｆ"[2]}:
+					case char{u8"Ｇ"[2]}:
+					case char{u8"Ｈ"[2]}:
+					case char{u8"Ｉ"[2]}:
+					case char{u8"Ｊ"[2]}:
+					case char{u8"Ｋ"[2]}:
+					case char{u8"Ｌ"[2]}:
+					case char{u8"Ｍ"[2]}:
+					case char{u8"Ｎ"[2]}:
+					case char{u8"Ｏ"[2]}:
+					case char{u8"Ｐ"[2]}:
+					case char{u8"Ｑ"[2]}:
+					case char{u8"Ｒ"[2]}:
+					case char{u8"Ｓ"[2]}:
+					case char{u8"Ｔ"[2]}:
+					case char{u8"Ｕ"[2]}:
+					case char{u8"Ｖ"[2]}:
 					{
-						result += static_cast<char>(c3);
+						result += path[i + 2];
 						result.back() -= u8"Ａ"[2];
 						result.back() += 10;
 						continue;
 					}
-					case char2{u8"！"[2]}:
+					case char{u8"！"[2]}:
 					{
-						if (const char2 c4 = get_char(i + 3))
-						{
-							// Escape anything but null character
-							result += c4;
-						}
-						else
-						{
-							return result;
-						}
-
 						i += 3;
+						result += c;
 						continue;
 					}
-					case char2{u8"．"[2]}:
-					{
-						result += '.';
-						break;
-					}
-					case char2{u8"＜"[2]}:
+					case char{u8"＜"[2]}:
 					{
 						result += '<';
 						break;
 					}
-					case char2{u8"＞"[2]}:
+					case char{u8"＞"[2]}:
 					{
 						result += '>';
 						break;
 					}
-					case char2{u8"："[2]}:
+					case char{u8"："[2]}:
 					{
 						result += ':';
 						break;
 					}
-					case char2{u8"＂"[2]}:
+					case char{u8"＂"[2]}:
 					{
 						result += '"';
 						break;
 					}
-					case char2{u8"＼"[2]}:
+					case char{u8"＼"[2]}:
 					{
 						result += '\\';
 						break;
 					}
-					case char2{u8"？"[2]}:
+					case char{u8"？"[2]}:
 					{
 						result += '?';
 						break;
 					}
-					case char2{u8"＊"[2]}:
+					case char{u8"＊"[2]}:
 					{
 						result += '*';
 						break;
 					}
-					case char2{u8"＄"[2]}:
+					case char{u8"＄"[2]}:
 					{
 						if (i == 0)
 						{
@@ -648,15 +506,15 @@ std::string vfs::unescape(std::string_view name)
 
 				break;
 			}
-			case char2{u8"｀"[1]}:
+			case char{u8"｀"[1]}:
 			{
-				const uchar c3 = get_char(i + 2);
+				const uchar c3 = reinterpret_cast<const uchar&>(path[i + 2]);
 
 				if (c3 >= 0x80 && c3 <= 0x9e)
 				{
-					switch (static_cast<char2>(c3))
+					switch (path[i + 2])
 					{
-					case char2{u8"｜"[2]}:
+					case char{u8"｜"[2]}:
 					{
 						result += '|';
 						break;
@@ -684,11 +542,6 @@ std::string vfs::unescape(std::string_view name)
 			}
 			}
 			break;
-		}
-		case 0:
-		{
-			// NTS detected
-			return result;
 		}
 		default:
 		{
@@ -718,11 +571,7 @@ bool vfs::host::rename(const std::string& from, const std::string& to, bool over
 bool vfs::host::unlink(const std::string& path, const std::string& dev_root)
 {
 #ifdef _WIN32
-	if (auto device = fs::get_virtual_device(path))
-	{
-		return device->remove(path);
-	}
-	else
+	if (path.size() < 2 || reinterpret_cast<const u16&>(path.front()) != "//"_u16)
 	{
 		// Rename to special dummy name which will be ignored by VFS (but opened file handles can still read or write it)
 		const std::string dummy = fmt::format(u8"%s/＄%s%s", dev_root, fmt::base57(std::hash<std::string>()(path)), fmt::base57(__rdtsc()));
@@ -735,78 +584,14 @@ bool vfs::host::unlink(const std::string& path, const std::string& dev_root)
 		if (fs::file f{dummy, fs::read + fs::write})
 		{
 			// Set to delete on close on last handle
-			FILE_DISPOSITION_INFO disp;
-			disp.DeleteFileW = true;
-			SetFileInformationByHandle(f.get_handle(), FileDispositionInfo, &disp, sizeof(disp));
+			f.set_delete();
 			return true;
 		}
 
 		// TODO: what could cause this and how to handle it
 		return true;
 	}
-#else
+#endif
+
 	return fs::remove_file(path);
-#endif
-}
-
-bool vfs::host::remove_all(const std::string& path, const std::string& dev_root, bool remove_root)
-{
-#ifdef _WIN32
-	if (remove_root)
-	{
-		// Rename to special dummy folder which will be ignored by VFS (but opened file handles can still read or write it)
-		const std::string dummy = fmt::format(u8"%s/＄%s%s", dev_root, fmt::base57(std::hash<std::string>()(path)), fmt::base57(__rdtsc()));
-
-		if (!vfs::host::rename(path, dummy, false))
-		{
-			return false;
-		}
-
-		if (!vfs::host::remove_all(dummy, dev_root, false))
-		{
-			return false;
-		}
-
-		if (!fs::remove_dir(dummy))
-		{
-			return false;
-		}
-	}
-	else
-	{
-		const auto root_dir = fs::dir(path);
-
-		if (!root_dir)
-		{
-			return false;
-		}
-
-		for (const auto& entry : root_dir)
-		{
-			if (entry.name == "." || entry.name == "..")
-			{
-				continue;
-			}
-
-			if (!entry.is_directory)
-			{
-				if (!vfs::host::unlink(path + '/' + entry.name, dev_root))
-				{
-					return false;
-				}
-			}
-			else
-			{
-				if (!vfs::host::remove_all(path + '/' + entry.name, dev_root))
-				{
-					return false;
-				}
-			}
-		}
-	}
-
-	return true;
-#else
-	return fs::remove_all(path, remove_root);
-#endif
 }

@@ -1,19 +1,22 @@
-﻿#pragma once
+#pragma once
 
 #include "stdafx.h"
+#include "Emu/System.h"
+#include "Emu/Memory/vm.h"
+#include "Emu/CPU/CPUThread.h"
+#include "Emu/CPU/CPUDisAsm.h"
+#include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUThread.h"
 
 #include <QDialog>
 #include <QLineEdit>
 #include <QLabel>
-
-class CPUDisAsm;
-class cpu_thread;
+#include <QVBoxLayout>
+#include <QMessageBox>
+#include <QPushButton>
 
 class instruction_editor_dialog : public QDialog
 {
-	Q_OBJECT
-
-private:
 	u32 m_pc;
 	u32 m_cpu_offset;
 	CPUDisAsm* m_disasm;
@@ -23,6 +26,7 @@ private:
 public:
 	std::weak_ptr<cpu_thread> cpu;
 
+public:
 	instruction_editor_dialog(QWidget *parent, u32 _pc, const std::shared_ptr<cpu_thread>& _cpu, CPUDisAsm* _disasm);
 
 	void updatePreview();

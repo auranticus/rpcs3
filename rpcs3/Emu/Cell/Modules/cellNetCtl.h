@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "cellGame.h"
 
@@ -104,14 +104,11 @@ enum
 // Wireless connection security measures
 enum
 {
-	CELL_NET_CTL_WLAN_SECURITY_NOAUTH         = 0,
-	CELL_NET_CTL_WLAN_SECURITY_WEP            = 1,
-	CELL_NET_CTL_WLAN_SECURITY_WPAPSK_TKIP    = 2,
-	CELL_NET_CTL_WLAN_SECURITY_WPAPSK_AES     = 3,
-	CELL_NET_CTL_WLAN_SECURITY_UNSUPPORTED    = 4,
-	CELL_NET_CTL_WLAN_SECURITY_WPA2PSK_TKIP   = 5,
-	CELL_NET_CTL_WLAN_SECURITY_WPA2PSK_AES    = 6,
-	CELL_NET_CTL_WLAN_SECURITY_WPAPSK_WPA2PSK = 7,
+	CELL_NET_CTL_WLAN_SECURITY_NOAUTH      = 0,
+	CELL_NET_CTL_WLAN_SECURITY_WEP         = 1,
+	CELL_NET_CTL_WLAN_SECURITY_WPAPSK_TKIP = 2,
+	CELL_NET_CTL_WLAN_SECURITY_WPAPSK_AES  = 3,
+	CELL_NET_CTL_WLAN_SECURITY_UNSUPPORTED = 4,
 };
 
 // 802.1X settings
@@ -170,8 +167,6 @@ enum
 	CELL_NET_CTL_INFO_HTTP_PROXY_SERVER = 22,
 	CELL_NET_CTL_INFO_HTTP_PROXY_PORT   = 23,
 	CELL_NET_CTL_INFO_UPNP_CONFIG       = 24,
-	CELL_NET_CTL_INFO_RESERVED1         = 25,
-	CELL_NET_CTL_INFO_RESERVED2         = 26,
 };
 
 // Network start dialogs
@@ -179,7 +174,6 @@ enum
 {
 	CELL_NET_CTL_NETSTART_TYPE_NET = 0,
 	CELL_NET_CTL_NETSTART_TYPE_NP  = 1,
-	CELL_NET_CTL_NETSTART_TYPE_MAX = 2,
 };
 
 // Network start dialog statuses
@@ -214,28 +208,15 @@ enum
 	CELL_NET_CTL_NATINFO_NAT_TYPE_3 = 3,
 };
 
-enum
-{
-	CELL_NET_CTL_ETHER_ADDR_LEN        = 6,
-	CELL_NET_CTL_BSSID_LEN             = 6,
-	CELL_NET_CTL_SSID_LEN              = 32,
-	CELL_NET_CTL_WLAN_SECURITY_KEY_LEN = (64 + 1),
-	CELL_NET_CTL_AUTH_NAME_LEN         = (127 + 1),
-	CELL_NET_CTL_AUTH_KEY_LEN          = (127 + 1),
-	CELL_NET_CTL_DHCP_HOSTNAME_LEN     = (254 + 1),
-	CELL_NET_CTL_HOSTNAME_LEN          = (255 + 1),
-	CELL_NET_CTL_IPV4_ADDR_STR_LEN     = 16,
-};
-
 struct CellNetCtlEtherAddr
 {
-	u8 data[CELL_NET_CTL_ETHER_ADDR_LEN];
+	u8 data[6];
 	u8 padding[2];
 };
 
 struct CellNetCtlSSID
 {
-	u8 data[CELL_NET_CTL_SSID_LEN];
+	u8 data[32];
 	u8 term;
 	u8 padding[3];
 };
@@ -251,19 +232,19 @@ union CellNetCtlInfo
 	CellNetCtlSSID ssid;
 	be_t<u32> wlan_security;
 	be_t<u32> auth_8021x_type;
-	char auth_8021x_auth_name[CELL_NET_CTL_AUTH_NAME_LEN];
+	char auth_8021x_auth_name[128];
 	u8 rssi;
 	u8 channel;
 	be_t<u32> ip_config;
-	char dhcp_hostname[CELL_NET_CTL_HOSTNAME_LEN];
-	char pppoe_auth_name[CELL_NET_CTL_AUTH_NAME_LEN];
-	char ip_address[CELL_NET_CTL_IPV4_ADDR_STR_LEN];
-	char netmask[CELL_NET_CTL_IPV4_ADDR_STR_LEN];
-	char default_route[CELL_NET_CTL_IPV4_ADDR_STR_LEN];
-	char primary_dns[CELL_NET_CTL_IPV4_ADDR_STR_LEN];
-	char secondary_dns[CELL_NET_CTL_IPV4_ADDR_STR_LEN];
+	char dhcp_hostname[256];
+	char pppoe_auth_name[128];
+	char ip_address[16];
+	char netmask[16];
+	char default_route[16];
+	char primary_dns[16];
+	char secondary_dns[16];
 	be_t<u32> http_proxy_config;
-	char http_proxy_server[CELL_NET_CTL_HOSTNAME_LEN];
+	char http_proxy_server[256];
 	be_t<u16> http_proxy_port;
 	be_t<u32> upnp_config;
 };
@@ -326,13 +307,13 @@ static const char* InfoCodeToName(s32 code)
 
 enum
 {
-	CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE            = 0,
-	CELL_GAMEUPDATE_RESULT_STATUS_UPDATE_FOUND         = 1,
-	CELL_GAMEUPDATE_RESULT_STATUS_MAINTENANCE          = 2,
-	CELL_GAMEUPDATE_RESULT_STATUS_ERROR                = 3,
-	CELL_GAMEUPDATE_RESULT_STATUS_CANCELLED            = 4,
-	CELL_GAMEUPDATE_RESULT_STATUS_FINISHED             = 5,
-	CELL_GAMEUPDATE_RESULT_STATUS_ABORTED              = 6,
+	CELL_GAMEUPDATE_RESULT_STATUS_NO_UPDATE = 0,
+	CELL_GAMEUPDATE_RESULT_STATUS_UPDATE_FOUND = 1,
+	CELL_GAMEUPDATE_RESULT_STATUS_MAINTENANCE = 2,
+	CELL_GAMEUPDATE_RESULT_STATUS_ERROR = 3,
+	CELL_GAMEUPDATE_RESULT_STATUS_CANCELLED = 4,
+	CELL_GAMEUPDATE_RESULT_STATUS_FINISHED = 5,
+	CELL_GAMEUPDATE_RESULT_STATUS_ABORTED = 6,
 	CELL_GAMEUPDATE_RESULT_STATUS_SYSTEM_UPDATE_NEEDED = 7
 };
 

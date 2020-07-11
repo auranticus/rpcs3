@@ -1,26 +1,18 @@
-﻿#pragma once
+#pragma once
 
 #ifdef LLVM_AVAILABLE
 
 #include "restore_new.h"
 #ifdef _MSC_VER
 #pragma warning(push, 0)
-#else
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wall"
-#pragma GCC diagnostic ignored "-Wextra"
-#pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Analysis/ConstantFolding.h"
-#include "llvm/IR/IntrinsicsX86.h"
 #ifdef _MSC_VER
 #pragma warning(pop)
-#else
-#pragma GCC diagnostic pop
 #endif
 #include "define_new_memleakdetect.h"
 
@@ -28,7 +20,7 @@
 #include "Utilities/StrFmt.h"
 #include "Utilities/BEType.h"
 #include "Utilities/BitField.h"
-#include "util/logs.hpp"
+#include "Utilities/Log.h"
 #include "Utilities/JIT.h"
 
 #include <unordered_map>
@@ -828,7 +820,7 @@ struct llvm_neg
 
 	static_assert(llvm_value_t<T>::is_sint || llvm_value_t<T>::is_uint || llvm_value_t<T>::is_float, "llvm_neg<>: invalid type");
 
-	static constexpr auto opc = llvm_value_t<T>::is_float ? llvm::Instruction::FNeg : llvm::Instruction::Sub;
+	static constexpr auto opc = llvm_value_t<T>::is_float ? llvm::Instruction::FSub : llvm::Instruction::Sub;
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
 	{
@@ -848,19 +840,6 @@ struct llvm_neg
 	llvm_match_tuple<A1> match(llvm::Value*& value) const
 	{
 		llvm::Value* v1 = {};
-
-		if constexpr (llvm_value_t<T>::is_float)
-		{
-			if (auto i = llvm::dyn_cast_or_null<llvm::UnaryOperator>(value); i && i->getOpcode() == opc)
-			{
-				v1 = i->getOperand(0);
-
-				if (auto r1 = a1.match(v1); v1)
-				{
-					return r1;
-				}
-			}
-		}
 
 		if (auto i = llvm::dyn_cast_or_null<llvm::BinaryOperator>(value); i && i->getOpcode() == opc)
 		{
@@ -1009,8 +988,8 @@ struct llvm_fshl
 
 	static llvm::Function* get_fshl(llvm::IRBuilder<>* ir)
 	{
-		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
+		const auto module = ir->GetInsertBlock()->getParent()->getParent();
+		return llvm::Intrinsic::getDeclaration(module, llvm::Intrinsic::fshl, {llvm_value_t<T>::get_type(ir->getContext())});
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -1081,8 +1060,8 @@ struct llvm_fshr
 
 	static llvm::Function* get_fshr(llvm::IRBuilder<>* ir)
 	{
-		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-		return llvm::Intrinsic::getDeclaration(_module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
+		const auto module = ir->GetInsertBlock()->getParent()->getParent();
+		return llvm::Intrinsic::getDeclaration(module, llvm::Intrinsic::fshr, {llvm_value_t<T>::get_type(ir->getContext())});
 	}
 
 	static llvm::Value* fold(llvm::IRBuilder<>* ir, llvm::Value* v1, llvm::Value* v2, llvm::Value* v3)
@@ -1642,7 +1621,7 @@ struct llvm_bitcast
 	using type = U;
 
 	llvm_expr_t<A1> a1;
-	llvm::Module* _module;
+	llvm::Module* module;
 
 	static constexpr uint bitsize0 = llvm_value_t<T>::is_vector ? llvm_value_t<T>::is_vector * llvm_value_t<T>::esize : llvm_value_t<T>::esize;
 	static constexpr uint bitsize1 = llvm_value_t<U>::is_vector ? llvm_value_t<U>::is_vector * llvm_value_t<U>::esize : llvm_value_t<U>::esize;
@@ -1668,7 +1647,7 @@ struct llvm_bitcast
 
 		if (const auto c1 = llvm::dyn_cast<llvm::Constant>(v1))
 		{
-			const auto result = llvm::ConstantFoldCastOperand(llvm::Instruction::BitCast, c1, rt, _module->getDataLayout());
+			const auto result = llvm::ConstantFoldCastOperand(llvm::Instruction::BitCast, c1, rt, module->getDataLayout());
 
 			if (result)
 			{
@@ -1714,7 +1693,7 @@ struct llvm_bitcast
 			const auto target = llvm_value_t<T>::get_type(c->getContext());
 
 			// Reverse bitcast on a constant
-			if (llvm::Value* cv = llvm::ConstantFoldCastOperand(llvm::Instruction::BitCast, c, target, _module->getDataLayout()))
+			if (llvm::Value* cv = llvm::ConstantFoldCastOperand(llvm::Instruction::BitCast, c, target, module->getDataLayout()))
 			{
 				if (auto r1 = a1.match(cv); cv)
 				{
@@ -2029,8 +2008,8 @@ struct llvm_add_sat
 
 	static llvm::Function* get_add_sat(llvm::IRBuilder<>* ir)
 	{
-		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
+		const auto module = ir->GetInsertBlock()->getParent()->getParent();
+		return llvm::Intrinsic::getDeclaration(module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2100,8 +2079,8 @@ struct llvm_sub_sat
 
 	static llvm::Function* get_sub_sat(llvm::IRBuilder<>* ir)
 	{
-		const auto _module = ir->GetInsertBlock()->getParent()->getParent();
-		return llvm::Intrinsic::getDeclaration(_module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
+		const auto module = ir->GetInsertBlock()->getParent()->getParent();
+		return llvm::Intrinsic::getDeclaration(module, intr, {llvm_value_t<T>::get_type(ir->getContext())});
 	}
 
 	llvm::Value* eval(llvm::IRBuilder<>* ir) const
@@ -2403,7 +2382,7 @@ struct llvm_shuffle2
 class cpu_translator
 {
 protected:
-	cpu_translator(llvm::Module* _module, bool is_be);
+	cpu_translator(llvm::Module* module, bool is_be);
 
 	// LLVM context
 	std::reference_wrapper<llvm::LLVMContext> m_context;
@@ -2418,10 +2397,7 @@ protected:
 	bool m_is_be;
 
 	// Allow PSHUFB intrinsic
-	bool m_use_ssse3 = true;
-
-	// Allow FMA
-	bool m_use_fma = false;
+	bool m_use_ssse3;
 
 	// IR builder
 	llvm::IRBuilder<>* m_ir;
@@ -2479,16 +2455,8 @@ public:
 		static_assert(sizeof...(FArgs) == sizeof...(Args), "spu_llvm_recompiler::call(): unexpected arg number");
 		const auto type = llvm::FunctionType::get(get_type<RT>(), {args->getType()...}, false);
 		const auto func = llvm::cast<llvm::Function>(m_module->getOrInsertFunction({lame.data(), lame.size()}, type).getCallee());
-#ifdef _WIN32
-		func->setCallingConv(llvm::CallingConv::Win64);
-#endif
-		m_engine->updateGlobalMapping({lame.data(), lame.size()}, reinterpret_cast<std::uintptr_t>(_func));
-
-		const auto inst = m_ir->CreateCall(func, {args...});
-#ifdef _WIN32
-		inst->setCallingConv(llvm::CallingConv::Win64);
-#endif
-		return inst;
+		m_engine->addGlobalMapping({lame.data(), lame.size()}, reinterpret_cast<std::uintptr_t>(_func));
+		return m_ir->CreateCall(func, {args...});
 	}
 
 	// Bitcast with immediate constant folding
@@ -2695,8 +2663,8 @@ public:
 	template <typename... Types>
 	llvm::Function* get_intrinsic(llvm::Intrinsic::ID id)
 	{
-		const auto _module = m_ir->GetInsertBlock()->getParent()->getParent();
-		return llvm::Intrinsic::getDeclaration(_module, id, {get_type<Types>()...});
+		const auto module = m_ir->GetInsertBlock()->getParent()->getParent();
+		return llvm::Intrinsic::getDeclaration(module, id, {get_type<Types>()...});
 	}
 
 	template <typename T>
@@ -2743,23 +2711,6 @@ public:
 		return result;
 	}
 
-	// TODO: Support doubles
-	auto fre(value_t<f32[4]> a)
-	{
-		decltype(a) result;
-		const auto av = a.eval(m_ir);
-		result.value  = m_ir->CreateCall(m_module->getOrInsertFunction("llvm.x86.sse.rcp.ps", av->getType(), av->getType()).getCallee(), {av});
-		return result;
-	}
-
-	auto frsqe(value_t<f32[4]> a)
-	{
-		decltype(a) result;
-		const auto av = a.eval(m_ir);
-		result.value  = m_ir->CreateCall(m_module->getOrInsertFunction("llvm.x86.sse.rsqrt.ps", av->getType(), av->getType()).getCallee(), {av});
-		return result;
-	}
-
 	template <typename T1, typename T2>
 	value_t<u8[16]> pshufb(T1 a, T2 b)
 	{
@@ -2787,7 +2738,7 @@ public:
 
 			if (cv || llvm::isa<llvm::ConstantAggregateZero>(c))
 			{
-				result.value = llvm::ConstantDataVector::get(m_context, llvm::makeArrayRef(reinterpret_cast<const u8*>(&mask), 16));
+				result.value = llvm::ConstantDataVector::get(m_context, llvm::makeArrayRef((const u8*)mask._bytes, 16));
 				result.value = m_ir->CreateZExt(result.value, get_type<u32[16]>());
 				result.value = m_ir->CreateShuffleVector(data0, zeros, result.value);
 				return result;
@@ -2842,32 +2793,5 @@ public:
 	template <typename T = v128>
 	llvm::Constant* make_const_vector(T, llvm::Type*);
 };
-
-// Format llvm::SizeType
-template <>
-struct fmt_unveil<llvm::TypeSize, void>
-{
-	using type = std::size_t;
-
-	static inline std::size_t get(const llvm::TypeSize& arg)
-	{
-		return arg;
-	}
-};
-
-#ifndef _MSC_VER
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wignored-attributes"
-#endif
-
-template <>
-inline llvm::Type* cpu_translator::get_type<__m128i>()
-{
-	return llvm::VectorType::get(llvm::Type::getInt8Ty(m_context), 16);
-}
-
-#ifndef _MSC_VER
-#pragma GCC diagnostic pop
-#endif
 
 #endif

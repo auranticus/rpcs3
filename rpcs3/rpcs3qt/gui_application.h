@@ -3,17 +3,15 @@
 #include "stdafx.h"
 
 #include <QApplication>
-#include <QElapsedTimer>
-#include <QTimer>
-#include <QTranslator>
+#include <QFontDatabase>
+#include <QIcon>
 
+#include "main_window.h"
 #include "main_application.h"
-
-class gs_frame;
-class main_window;
-class gui_settings;
-class emu_settings;
-class persistent_settings;
+#include "emu_settings.h"
+#include "gui_settings.h"
+#include "gs_frame.h"
+#include "gl_gs_frame.h"
 
 /** RPCS3 GUI Application Class
  * The main point of this class is to do application initialization, to hold the main and game windows and to initialize callbacks.
@@ -48,39 +46,22 @@ private:
 		return thread();
 	}
 
-	void SwitchTranslator(QTranslator& translator, const QString& filename, const QString& language_code);
-	void LoadLanguage(const QString& language_code);
-	QStringList GetAvailableLanguageCodes();
-
 	void InitializeCallbacks();
 	void InitializeConnects();
 
-	void StartPlaytime(bool start_playtime);
-	void UpdatePlaytime();
-	void StopPlaytime();
-
-	QTranslator m_translator;
-	QTranslator m_translator_qt;
-	QString m_language_code;
-
-	QTimer m_timer;
-	QElapsedTimer m_timer_playtime;
-
 	std::shared_ptr<emu_settings> m_emu_settings;
 	std::shared_ptr<gui_settings> m_gui_settings;
-	std::shared_ptr<persistent_settings> m_persistent_settings;
 
 	bool m_show_gui = true;
 	bool m_use_cli_style = false;
 
 private Q_SLOTS:
 	void OnChangeStyleSheetRequest(const QString& path);
-	void OnEmuSettingsChange();
 
 Q_SIGNALS:
-	void OnEmulatorRun(bool start_playtime);
+	void OnEmulatorRun();
 	void OnEmulatorPause();
-	void OnEmulatorResume(bool start_playtime);
+	void OnEmulatorResume();
 	void OnEmulatorStop();
 	void OnEmulatorReady();
 

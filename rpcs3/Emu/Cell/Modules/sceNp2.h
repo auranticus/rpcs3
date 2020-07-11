@@ -485,7 +485,6 @@ typedef u8 SceNpMatching2Operator;
 typedef u8 SceNpMatching2CastType;
 typedef u8 SceNpMatching2SessionType;
 typedef u8 SceNpMatching2SignalingType;
-typedef u8 SceNpMatching2SignalingFlag;
 typedef u8 SceNpMatching2EventCause;
 typedef u8 SceNpMatching2ServerStatus;
 typedef u8 SceNpMatching2Role;
@@ -538,7 +537,7 @@ struct SceNpMatching2BinAttr
 {
 	be_t<SceNpMatching2AttributeId> id;
 	u8 padding[2];
-	vm::bptr<u8> ptr;
+	be_t<u32> ptr;
 	be_t<u32> size;
 };
 
@@ -588,9 +587,9 @@ struct SceNpMatching2JoinedSessionInfo
 // User information
 struct SceNpMatching2UserInfo
 {
-	vm::bptr<SceNpMatching2UserInfo> next;
+	vm::ptr<SceNpMatching2UserInfo> next;
 	SceNpUserInfo2 userInfo;
-	vm::bptr<SceNpMatching2BinAttr> userBinAttr;
+	vm::ptr<SceNpMatching2BinAttr> userBinAttr;
 	be_t<u32> userBinAttrNum;
 	SceNpMatching2JoinedSessionInfo joinedSessionInfo;
 	be_t<u32> joinedSessionInfoNum;
@@ -629,15 +628,15 @@ struct SceNpMatching2LobbyMemberBinAttrInternal
 // Lobby-internal lobby member information
 struct SceNpMatching2LobbyMemberDataInternal
 {
-	vm::bptr<SceNpMatching2LobbyMemberDataInternal> next;
+	vm::ptr<SceNpMatching2LobbyMemberDataInternal> next;
 	SceNpUserInfo2 userInfo;
 	CellRtcTick joinDate;
 	be_t<SceNpMatching2LobbyMemberId> memberId;
 	u8 padding[2];
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
+	vm::ptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
 	be_t<u32> joinedSessionInfoNum;
-	vm::bptr<SceNpMatching2LobbyMemberBinAttrInternal> lobbyMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2LobbyMemberBinAttrInternal> lobbyMemberBinAttrInternal;
 	be_t<u32> lobbyMemberBinAttrInternalNum; // Unsigned ints are be_t<u32> not uint, right?
 };
 
@@ -662,7 +661,7 @@ struct SceNpMatching2LobbyBinAttrInternal
 // Lobby-external lobby information
 struct SceNpMatching2LobbyDataExternal
 {
-	vm::bptr<SceNpMatching2LobbyDataExternal> next;
+	vm::ptr<SceNpMatching2LobbyDataExternal> next;
 	be_t<SceNpMatching2ServerId> serverId;
 	u8 padding1[2];
 	be_t<SceNpMatching2WorldId> worldId;
@@ -671,11 +670,11 @@ struct SceNpMatching2LobbyDataExternal
 	be_t<u32> maxSlot;
 	be_t<u32> curMemberNum;
 	be_t<u32> flagAttr;
-	vm::bptr<SceNpMatching2IntAttr> lobbySearchableIntAttrExternal;
+	vm::ptr<SceNpMatching2IntAttr> lobbySearchableIntAttrExternal;
 	be_t<u32> lobbySearchableIntAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> lobbySearchableBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> lobbySearchableBinAttrExternal;
 	be_t<u32> lobbySearchableBinAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> lobbyBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> lobbyBinAttrExternal;
 	be_t<u32> lobbyBinAttrExternalNum;
 	u8 padding3[4];
 };
@@ -690,7 +689,7 @@ struct SceNpMatching2LobbyDataInternal
 	be_t<u32> maxSlot;
 	SceNpMatching2LobbyMemberIdList memberIdList;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2LobbyBinAttrInternal> lobbyBinAttrInternal;
+	vm::ptr<SceNpMatching2LobbyBinAttrInternal> lobbyBinAttrInternal;
 	be_t<u32> lobbyBinAttrInternalNum;
 };
 
@@ -753,7 +752,7 @@ struct SceNpMatching2RoomMemberBinAttrInternal
 // External room member data
 struct SceNpMatching2RoomMemberDataExternal
 {
-	vm::bptr<SceNpMatching2RoomMemberDataExternal> next;
+	vm::ptr<SceNpMatching2RoomMemberDataExternal> next;
 	SceNpUserInfo2 userInfo;
 	CellRtcTick joinDate;
 	SceNpMatching2Role role;
@@ -763,27 +762,27 @@ struct SceNpMatching2RoomMemberDataExternal
 // Internal room member data
 struct SceNpMatching2RoomMemberDataInternal
 {
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> next;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> next;
 	SceNpUserInfo2 userInfo;
 	CellRtcTick joinDate;
 	be_t<SceNpMatching2RoomMemberId> memberId;
 	SceNpMatching2TeamId teamId;
 	u8 padding1[1];
-	vm::bptr<SceNpMatching2RoomGroup> roomGroup;
+	vm::ptr<SceNpMatching2RoomGroup> roomGroup;
 	SceNpMatching2NatType natType;
 	u8 padding2[3];
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2RoomMemberBinAttrInternal> roomMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2RoomMemberBinAttrInternal> roomMemberBinAttrInternal;
 	be_t<u32> roomMemberBinAttrInternalNum;
 };
 
 // Internal room member data list
 struct SceNpMatching2RoomMemberDataInternalList
 {
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> members;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> members;
 	be_t<u32> membersNum;
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> me;
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> owner;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> me;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> owner;
 };
 
 // Internal room binary attribute
@@ -798,7 +797,7 @@ struct SceNpMatching2RoomBinAttrInternal
 // External room data
 struct SceNpMatching2RoomDataExternal
 {
-	vm::bptr<SceNpMatching2RoomDataExternal> next;
+	vm::ptr<SceNpMatching2RoomDataExternal> next;
 	be_t<SceNpMatching2ServerId> serverId;
 	u8 padding1[2];
 	be_t<SceNpMatching2WorldId> worldId;
@@ -811,15 +810,15 @@ struct SceNpMatching2RoomDataExternal
 	be_t<u16> openPrivateSlotNum;
 	be_t<u16> curMemberNum;
 	be_t<SceNpMatching2RoomPasswordSlotMask> passwordSlotMask;
-	vm::bptr<SceNpUserInfo2> owner;
-	vm::bptr<SceNpMatching2RoomGroup> roomGroup;
+	vm::ptr<SceNpUserInfo2> owner;
+	vm::ptr<SceNpMatching2RoomGroup> roomGroup;
 	be_t<u32> roomGroupNum;
 	be_t<u32> flagAttr;
-	vm::bptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
+	vm::ptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
 	be_t<u32> roomSearchableIntAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
 	be_t<u32> roomSearchableBinAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomBinAttrExternal;
 	be_t<u32> roomBinAttrExternalNum;
 };
 
@@ -834,10 +833,10 @@ struct SceNpMatching2RoomDataInternal
 	be_t<SceNpMatching2RoomPasswordSlotMask> passwordSlotMask;
 	be_t<u32> maxSlot;
 	SceNpMatching2RoomMemberDataInternalList memberList;
-	vm::bptr<SceNpMatching2RoomGroup> roomGroup;
+	vm::ptr<SceNpMatching2RoomGroup> roomGroup;
 	be_t<u32> roomGroupNum;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2RoomBinAttrInternal> roomBinAttrInternal;
+	vm::ptr<SceNpMatching2RoomBinAttrInternal> roomBinAttrInternal;
 	be_t<u32> roomBinAttrInternalNum;
 };
 
@@ -858,9 +857,9 @@ union SceNpMatching2RoomMessageDestination
 // Invitation data
 struct SceNpMatching2InvitationData
 {
-	vm::bptr<SceNpMatching2JoinedSessionInfo> targetSession;
+	vm::ptr<SceNpMatching2JoinedSessionInfo> targetSession;
 	be_t<u32> targetSessionNum;
-	vm::bptr<void> optData;
+	vm::ptr<void> optData;
 	be_t<u32> optDataLen;
 };
 
@@ -868,7 +867,7 @@ struct SceNpMatching2InvitationData
 struct SceNpMatching2SignalingOptParam
 {
 	SceNpMatching2SignalingType type;
-	SceNpMatching2SignalingFlag flag;
+	u8 reserved1[1];
 	be_t<SceNpMatching2RoomMemberId> hubMemberId;
 	u8 reserved2[4];
 };
@@ -876,8 +875,8 @@ struct SceNpMatching2SignalingOptParam
 // Option parameters for requests
 struct SceNpMatching2RequestOptParam
 {
-	vm::bptr<SceNpMatching2RequestCallback> cbFunc;
-	vm::bptr<void> cbFuncArg;
+	SceNpMatching2RequestCallback cbFunc;
+	vm::ptr<void> cbFuncArg;
 	be_t<u32> timeout;
 	be_t<u16> appReqId;
 	u8 padding[2];
@@ -928,7 +927,7 @@ struct SceNpMatching2GetWorldInfoListRequest
 // World data list request response data
 struct SceNpMatching2GetWorldInfoListResponse
 {
-	vm::bptr<SceNpMatching2World> world;
+	vm::ptr<SceNpMatching2World> world;
 	be_t<u32> worldNum;
 };
 
@@ -937,7 +936,7 @@ struct SceNpMatching2SetUserInfoRequest
 {
 	be_t<SceNpMatching2ServerId> serverId;
 	u8 padding[2];
-	vm::bptr<SceNpMatching2BinAttr> userBinAttr;
+	vm::ptr<SceNpMatching2BinAttr> userBinAttr;
 	be_t<u32> userBinAttrNum;
 };
 
@@ -946,7 +945,7 @@ struct SceNpMatching2GetUserInfoListRequest
 {
 	be_t<SceNpMatching2ServerId> serverId;
 	u8 padding[2];
-	vm::bptr<SceNpId> npId;
+	vm::ptr<SceNpId> npId;
 	be_t<u32> npIdNum;
 	vm::bptr<SceNpMatching2AttributeId> attrId;
 	be_t<u32> attrIdNum;
@@ -956,7 +955,7 @@ struct SceNpMatching2GetUserInfoListRequest
 // User information list acquisition response data
 struct SceNpMatching2GetUserInfoListResponse
 {
-	vm::bptr<SceNpMatching2UserInfo> userInfo;
+	vm::ptr<SceNpMatching2UserInfo> userInfo;
 	be_t<u32> userInfoNum;
 };
 
@@ -969,7 +968,7 @@ struct SceNpMatching2GetRoomMemberDataExternalListRequest
 // External room member data list request response data
 struct SceNpMatching2GetRoomMemberDataExternalListResponse
 {
-	vm::bptr<SceNpMatching2RoomMemberDataExternal> roomMemberDataExternal;
+	vm::ptr<SceNpMatching2RoomMemberDataExternal> roomMemberDataExternal;
 	be_t<u32> roomMemberDataExternalNum;
 };
 
@@ -977,11 +976,11 @@ struct SceNpMatching2GetRoomMemberDataExternalListResponse
 struct SceNpMatching2SetRoomDataExternalRequest
 {
 	be_t<SceNpMatching2RoomId> roomId;
-	vm::bptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
+	vm::ptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
 	be_t<u32> roomSearchableIntAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
 	be_t<u32> roomSearchableBinAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomBinAttrExternal;
 	be_t<u32> roomBinAttrExternalNum;
 };
 
@@ -997,7 +996,7 @@ struct SceNpMatching2GetRoomDataExternalListRequest
 // External room data list request response data
 struct SceNpMatching2GetRoomDataExternalListResponse
 {
-	vm::bptr<SceNpMatching2RoomDataExternal> roomDataExternal;
+	vm::ptr<SceNpMatching2RoomDataExternal> roomDataExternal;
 	be_t<u32> roomDataExternalNum;
 };
 
@@ -1009,44 +1008,44 @@ struct SceNpMatching2CreateJoinRoomRequest
 	be_t<SceNpMatching2LobbyId> lobbyId;
 	be_t<u32> maxSlot;
 	be_t<u32> flagAttr;
-	vm::bptr<SceNpMatching2BinAttr> roomBinAttrInternal;
+	vm::ptr<SceNpMatching2BinAttr> roomBinAttrInternal;
 	be_t<u32> roomBinAttrInternalNum;
-	vm::bptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
+	vm::ptr<SceNpMatching2IntAttr> roomSearchableIntAttrExternal;
 	be_t<u32> roomSearchableIntAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomSearchableBinAttrExternal;
 	be_t<u32> roomSearchableBinAttrExternalNum;
-	vm::bptr<SceNpMatching2BinAttr> roomBinAttrExternal;
+	vm::ptr<SceNpMatching2BinAttr> roomBinAttrExternal;
 	be_t<u32> roomBinAttrExternalNum;
-	vm::bptr<SceNpMatching2SessionPassword> roomPassword;
-	vm::bptr<SceNpMatching2RoomGroupConfig> groupConfig;
+	vm::ptr<SceNpMatching2SessionPassword> roomPassword;
+	vm::ptr<SceNpMatching2RoomGroupConfig> groupConfig;
 	be_t<u32> groupConfigNum;
 	vm::bptr<SceNpMatching2RoomPasswordSlotMask> passwordSlotMask;
-	vm::bptr<SceNpId> allowedUser;
+	vm::ptr<SceNpId> allowedUser;
 	be_t<u32> allowedUserNum;
-	vm::bptr<SceNpId> blockedUser;
+	vm::ptr<SceNpId> blockedUser;
 	be_t<u32> blockedUserNum;
-	vm::bptr<SceNpMatching2GroupLabel> joinRoomGroupLabel;
-	vm::bptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2GroupLabel> joinRoomGroupLabel;
+	vm::ptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
 	be_t<u32> roomMemberBinAttrInternalNum;
 	SceNpMatching2TeamId teamId;
 	u8 padding2[3];
-	vm::bptr<SceNpMatching2SignalingOptParam> sigOptParam;
+	SceNpMatching2SignalingOptParam sigOptParam;
 	u8 padding3[4];
 };
 
 // Create-and-join room request response data
 struct SceNpMatching2CreateJoinRoomResponse
 {
-	vm::bptr<SceNpMatching2RoomDataInternal> roomDataInternal;
+	vm::ptr<SceNpMatching2RoomDataInternal> roomDataInternal;
 };
 
 // Join room request parameters
 struct SceNpMatching2JoinRoomRequest
 {
 	be_t<SceNpMatching2RoomId> roomId;
-	vm::bptr<SceNpMatching2SessionPassword> roomPassword;
-	vm::bptr<SceNpMatching2GroupLabel> joinRoomGroupLabel;
-	vm::bptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2SessionPassword> roomPassword;
+	vm::ptr<SceNpMatching2GroupLabel> joinRoomGroupLabel;
+	vm::ptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
 	be_t<u32> roomMemberBinAttrInternalNum;
 	SceNpMatching2PresenceOptionData optData;
 	SceNpMatching2TeamId teamId;
@@ -1056,7 +1055,7 @@ struct SceNpMatching2JoinRoomRequest
 // Join room request response data
 struct SceNpMatching2JoinRoomResponse
 {
-	vm::bptr<SceNpMatching2RoomDataInternal> roomDataInternal;
+	vm::ptr<SceNpMatching2RoomDataInternal> roomDataInternal;
 };
 
 // Leave room request parameters
@@ -1095,9 +1094,9 @@ struct SceNpMatching2SearchRoomRequest
 	SceNpMatching2RangeFilter rangeFilter;
 	be_t<SceNpMatching2FlagAttr> flagFilter;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2IntSearchFilter> intFilter;
+	vm::ptr<SceNpMatching2IntSearchFilter> intFilter;
 	be_t<u32> intFilterNum;
-	vm::bptr<SceNpMatching2BinSearchFilter> binFilter;
+	vm::ptr<SceNpMatching2BinSearchFilter> binFilter;
 	be_t<u32> binFilterNum;
 	vm::bptr<SceNpMatching2AttributeId> attrId;
 	be_t<u32> attrIdNum;
@@ -1107,7 +1106,7 @@ struct SceNpMatching2SearchRoomRequest
 struct SceNpMatching2SearchRoomResponse
 {
 	SceNpMatching2Range range;
-	vm::bptr<SceNpMatching2RoomDataExternal> roomDataExternal;
+	vm::ptr<SceNpMatching2RoomDataExternal> roomDataExternal;
 };
 
 // Room message send request parameters
@@ -1146,9 +1145,9 @@ struct SceNpMatching2SetRoomDataInternalRequest
 	be_t<SceNpMatching2RoomId> roomId;
 	be_t<SceNpMatching2FlagAttr> flagFilter;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2BinAttr> roomBinAttrInternal;
+	vm::ptr<SceNpMatching2BinAttr> roomBinAttrInternal;
 	be_t<u32> roomBinAttrInternalNum;
-	vm::bptr<SceNpMatching2RoomGroupPasswordConfig> passwordConfig;
+	vm::ptr<SceNpMatching2RoomGroupPasswordConfig> passwordConfig;
 	be_t<u32> passwordConfigNum;
 	vm::bptr<SceNpMatching2RoomPasswordSlotMask> passwordSlotMask;
 	vm::bptr<SceNpMatching2RoomMemberId> ownerPrivilegeRank;
@@ -1167,7 +1166,7 @@ struct SceNpMatching2GetRoomDataInternalRequest
 // Internal room data request response data
 struct SceNpMatching2GetRoomDataInternalResponse
 {
-	vm::bptr<SceNpMatching2RoomDataInternal> roomDataInternal;
+	vm::ptr<SceNpMatching2RoomDataInternal> roomDataInternal;
 };
 
 // Internal room member data configuration request parameters
@@ -1179,7 +1178,7 @@ struct SceNpMatching2SetRoomMemberDataInternalRequest
 	u8 padding[5];
 	be_t<SceNpMatching2FlagAttr> flagFilter;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2BinAttr> roomMemberBinAttrInternal;
 	be_t<u32> roomMemberBinAttrInternalNum;
 };
 
@@ -1196,7 +1195,7 @@ struct SceNpMatching2GetRoomMemberDataInternalRequest
 // Internal room member data request response data
 struct SceNpMatching2GetRoomMemberDataInternalResponse
 {
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> roomMemberDataInternal;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> roomMemberDataInternal;
 };
 
 // Signaling option parameter setting request parameter
@@ -1219,16 +1218,16 @@ struct SceNpMatching2GetLobbyInfoListRequest
 struct SceNpMatching2GetLobbyInfoListResponse
 {
 	SceNpMatching2Range range;
-	vm::bptr<SceNpMatching2LobbyDataExternal> lobbyDataExternal;
+	vm::ptr<SceNpMatching2LobbyDataExternal> lobbyDataExternal;
 };
 
 // Lobby joining request parameter
 struct SceNpMatching2JoinLobbyRequest
 {
 	be_t<SceNpMatching2LobbyId> lobbyId;
-	vm::bptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
+	vm::ptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
 	be_t<u32> joinedSessionInfoNum;
-	vm::bptr<SceNpMatching2BinAttr> lobbyMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2BinAttr> lobbyMemberBinAttrInternal;
 	be_t<u32> lobbyMemberBinAttrInternalNum;
 	SceNpMatching2PresenceOptionData optData;
 	u8 padding[4];
@@ -1237,7 +1236,7 @@ struct SceNpMatching2JoinLobbyRequest
 // Lobby joining response data
 struct SceNpMatching2JoinLobbyResponse
 {
-	vm::bptr<SceNpMatching2LobbyDataInternal> lobbyDataInternal;
+	vm::ptr<SceNpMatching2LobbyDataInternal> lobbyDataInternal;
 };
 
 // Lobby leaving request parameter
@@ -1285,9 +1284,9 @@ struct SceNpMatching2SetLobbyMemberDataInternalRequest
 	u8 padding1[2];
 	be_t<SceNpMatching2FlagAttr> flagFilter;
 	be_t<SceNpMatching2FlagAttr> flagAttr;
-	vm::bptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
+	vm::ptr<SceNpMatching2JoinedSessionInfo> joinedSessionInfo;
 	be_t<u32> joinedSessionInfoNum;
-	vm::bptr<SceNpMatching2BinAttr> lobbyMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2BinAttr> lobbyMemberBinAttrInternal;
 	be_t<u32> lobbyMemberBinAttrInternalNum;
 	u8 padding2[4];
 };
@@ -1305,7 +1304,7 @@ struct SceNpMatching2GetLobbyMemberDataInternalRequest
 // Lobby-internal lobby member information acquisition response data
 struct SceNpMatching2GetLobbyMemberDataInternalResponse
 {
-	vm::bptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
+	vm::ptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
 };
 
 // Request parameters for obtaining a list of lobby-internal lobby member information
@@ -1323,7 +1322,7 @@ struct SceNpMatching2GetLobbyMemberDataInternalListRequest
 // Reponse data for obtaining a list of lobby-internal lobby member information
 struct SceNpMatching2GetLobbyMemberDataInternalListResponse
 {
-	vm::bptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
+	vm::ptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
 	be_t<u32> lobbyMemberDataInternalNum;
 };
 
@@ -1349,14 +1348,14 @@ struct SceNpMatching2SignalingGetPingInfoResponse
 struct SceNpMatching2JoinProhibitiveRoomRequest
 {
 	SceNpMatching2JoinRoomRequest joinParam;
-	vm::bptr<SceNpId> blockedUser;
+	vm::ptr<SceNpId> blockedUser;
 	be_t<u32> blockedUserNum;
 };
 
 // Room member update information
 struct SceNpMatching2RoomMemberUpdateInfo
 {
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> roomMemberDataInternal;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> roomMemberDataInternal;
 	SceNpMatching2EventCause eventCause;
 	u8 padding[3];
 	SceNpMatching2PresenceOptionData optData;
@@ -1369,7 +1368,7 @@ struct SceNpMatching2RoomOwnerUpdateInfo
 	be_t<SceNpMatching2RoomMemberId> newOwner;
 	SceNpMatching2EventCause eventCause;
 	u8 padding[3];
-	vm::bptr<SceNpMatching2SessionPassword> roomPassword;
+	vm::ptr<SceNpMatching2SessionPassword> roomPassword;
 	SceNpMatching2PresenceOptionData optData;
 };
 
@@ -1385,7 +1384,7 @@ struct SceNpMatching2RoomUpdateInfo
 // Internal room data update information
 struct SceNpMatching2RoomDataInternalUpdateInfo
 {
-	vm::bptr<SceNpMatching2RoomDataInternal> newRoomDataInternal;
+	vm::ptr<SceNpMatching2RoomDataInternal> newRoomDataInternal;
 	vm::bptr<SceNpMatching2FlagAttr> newFlagAttr;
 	vm::bptr<SceNpMatching2FlagAttr> prevFlagAttr;
 	vm::bptr<SceNpMatching2RoomPasswordSlotMask> newRoomPasswordSlotMask;
@@ -1399,7 +1398,7 @@ struct SceNpMatching2RoomDataInternalUpdateInfo
 // Internal room member data update information
 struct SceNpMatching2RoomMemberDataInternalUpdateInfo
 {
-	vm::bptr<SceNpMatching2RoomMemberDataInternal> newRoomMemberDataInternal;
+	vm::ptr<SceNpMatching2RoomMemberDataInternal> newRoomMemberDataInternal;
 	vm::bptr<SceNpMatching2FlagAttr> newFlagAttr;
 	vm::bptr<SceNpMatching2FlagAttr> prevFlagAttr;
 	vm::bptr<SceNpMatching2TeamId> newTeamId;
@@ -1413,8 +1412,8 @@ struct SceNpMatching2RoomMessageInfo
 	b8 filtered;
 	SceNpMatching2CastType castType;
 	u8 padding[2];
-	vm::bptr<SceNpMatching2RoomMessageDestination> dst;
-	vm::bptr<SceNpUserInfo2> srcMember;
+	vm::ptr<SceNpMatching2RoomMessageDestination> dst;
+	vm::ptr<SceNpUserInfo2> srcMember;
 	vm::cptr<void> msg;
 	be_t<u32> msgLen;
 };
@@ -1422,7 +1421,7 @@ struct SceNpMatching2RoomMessageInfo
 // Lobby member update information
 struct SceNpMatching2LobbyMemberUpdateInfo
 {
-	vm::bptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
+	vm::ptr<SceNpMatching2LobbyMemberDataInternal> lobbyMemberDataInternal;
 	SceNpMatching2EventCause eventCause;
 	u8 padding[3];
 	SceNpMatching2PresenceOptionData optData;
@@ -1446,7 +1445,7 @@ struct SceNpMatching2LobbyMemberDataInternalUpdateInfo
 	be_t<SceNpMatching2FlagAttr> newFlagAttr;
 	SceNpMatching2JoinedSessionInfo newJoinedSessionInfo;
 	be_t<u32> newJoinedSessionInfoNum;
-	vm::bptr<SceNpMatching2LobbyMemberBinAttrInternal> newLobbyMemberBinAttrInternal;
+	vm::ptr<SceNpMatching2LobbyMemberBinAttrInternal> newLobbyMemberBinAttrInternal;
 	be_t<u32> newLobbyMemberBinAttrInternalNum;
 };
 
@@ -1456,8 +1455,8 @@ struct SceNpMatching2LobbyMessageInfo
 	b8 filtered;
 	SceNpMatching2CastType castType;
 	u8 padding[2];
-	vm::bptr<SceNpMatching2LobbyMessageDestination> dst;
-	vm::bptr<SceNpUserInfo2> srcMember;
+	vm::ptr<SceNpMatching2LobbyMessageDestination> dst;
+	vm::ptr<SceNpUserInfo2> srcMember;
 	vm::cptr<void> msg;
 	be_t<u32> msgLen;
 };
@@ -1467,8 +1466,8 @@ struct SceNpMatching2LobbyInvitationInfo
 {
 	SceNpMatching2CastType castType;
 	u8 padding[3];
-	vm::bptr<SceNpMatching2LobbyMessageDestination> dst;
-	vm::bptr<SceNpUserInfo2> srcMember;
+	vm::ptr<SceNpMatching2LobbyMessageDestination> dst;
+	vm::ptr<SceNpUserInfo2> srcMember;
 	SceNpMatching2InvitationData invitationData;
 };
 
@@ -1579,4 +1578,21 @@ struct SceNpAuthGetAuthorizationCodeParameter
 	be_t<u64> size;
 	vm::bcptr<SceNpClientId> pClientId;
 	vm::bcptr<char> pScope;
+};
+
+// fxm objects
+
+struct sce_np_2_manager
+{
+	std::atomic<bool> is_initialized = false;
+};
+
+struct sce_np_2_matching_manager
+{
+	std::atomic<bool> is_initialized = false;
+};
+
+struct sce_np_oauth_2_manager
+{
+	std::atomic<bool> is_initialized = false;
 };

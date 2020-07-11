@@ -1,8 +1,9 @@
 ﻿#pragma once
 
-#include "../system_config.h"
+#include "../System.h"
 #include "Utilities/address_range.h"
 #include "Utilities/geometry.h"
+#include "Utilities/asm.h"
 #include "gcm_enums.h"
 
 #include <memory>
@@ -141,10 +142,8 @@ namespace rsx
 
 	struct avconf
 	{
-		bool _3d  = false;         // Stereo 3D off
 		u8 format = 0;             // XRGB
 		u8 aspect = 0;             // AUTO
-		u8 resolution_id = 2;      // 720p
 		u32 scanline_pitch = 0;    // PACKED
 		atomic_t<f32> gamma = 1.f; // NO GAMMA CORRECTION
 		u32 resolution_x = 1280;   // X RES
@@ -156,8 +155,7 @@ namespace rsx
 			switch (format)
 			{
 			default:
-				rsx_log.error("Invalid AV format 0x%x", format);
-				[[fallthrough]];
+				LOG_ERROR(RSX, "Invalid AV format 0x%x", format);
 			case 0: // CELL_VIDEO_OUT_BUFFER_COLOR_FORMAT_X8R8G8B8:
 			case 1: // CELL_VIDEO_OUT_BUFFER_COLOR_FORMAT_X8B8G8R8:
 				return CELL_GCM_TEXTURE_A8R8G8B8;
@@ -171,8 +169,7 @@ namespace rsx
 			switch (format)
 			{
 			default:
-				rsx_log.error("Invalid AV format 0x%x", format);
-				[[fallthrough]];
+				LOG_ERROR(RSX, "Invalid AV format 0x%x", format);
 			case 0: // CELL_VIDEO_OUT_BUFFER_COLOR_FORMAT_X8R8G8B8:
 			case 1: // CELL_VIDEO_OUT_BUFFER_COLOR_FORMAT_X8B8G8R8:
 				return 4;
@@ -240,19 +237,19 @@ namespace rsx
 	//
 	static inline u32 floor_log2(u32 value)
 	{
-		return value <= 1 ? 0 : std::countl_zero(value) ^ 31;
+		return value <= 1 ? 0 : utils::cntlz32(value, true) ^ 31;
 	}
 
 	static inline u32 ceil_log2(u32 value)
 	{
-		return value <= 1 ? 0 : std::countl_zero((value - 1) << 1) ^ 31;
+		return value <= 1 ? 0 : utils::cntlz32((value - 1) << 1, true) ^ 31;
 	}
 
 	static inline u32 next_pow2(u32 x)
 	{
 		if (x <= 2) return x;
 
-		return static_cast<u32>((1ULL << 32) >> std::countl_zero(x - 1));
+		return static_cast<u32>((1ULL << 32) >> utils::cntlz32(x - 1, true));
 	}
 
 	static inline bool fcmp(float a, float b, float epsilon = 0.000001f)
@@ -287,7 +284,7 @@ namespace rsx
 	{
 		for (u32 i = 0; i < size; i++)
 		{
-			*(static_cast<Td*>(dst) + i) = *(static_cast<Ts*>(src) - i);
+			*((Td*)dst + i) = *((Ts*)src - i);
 		}
 	}
 
@@ -333,8 +330,8 @@ namespace rsx
 	*    Restriction: It has mixed results if the height or width is not a power of 2
 	*    Restriction: Only works with 2D surfaces
 	*/
-	template <typename T, bool input_is_swizzled>
-	void convert_linear_swizzle(const void* input_pixels, void* output_pixels, u16 width, u16 height, u32 pitch)
+	template<typename T>
+	void convert_linear_swizzle(void* input_pixels, void* output_pixels, u16 width, u16 height, u32 pitch, bool input_is_swizzled)
 	{
 		u32 log2width = ceil_log2(width);
 		u32 log2height = ceil_log2(height);
@@ -360,12 +357,12 @@ namespace rsx
 
 		u32 adv = pitch / sizeof(T);
 
-		if constexpr (!input_is_swizzled)
+		if (!input_is_swizzled)
 		{
 			for (int y = 0; y < height; ++y)
 			{
-				auto src = static_cast<const T*>(input_pixels) + y * adv;
-				auto dst = static_cast<T*>(output_pixels) + offs_y;
+				T* src = static_cast<T*>(input_pixels) + y * adv;
+				T *dst = static_cast<T*>(output_pixels) + offs_y;
 				offs_x = offs_x0;
 
 				for (int x = 0; x < width; ++x)
@@ -386,8 +383,8 @@ namespace rsx
 		{
 			for (int y = 0; y < height; ++y)
 			{
-				auto src = static_cast<const T*>(input_pixels) + offs_y;
-				auto dst = static_cast<T*>(output_pixels) + y * adv;
+				T *src = static_cast<T*>(input_pixels) + offs_y;
+				T* dst = static_cast<T*>(output_pixels) + y * adv;
 				offs_x = offs_x0;
 
 				for (int x = 0; x < width; ++x)
@@ -413,16 +410,16 @@ namespace rsx
 	 * i.e 32 texels per "unit"
 	 */
 	template <typename T>
-	void convert_linear_swizzle_3d(const void* input_pixels, void* output_pixels, u16 width, u16 height, u16 depth)
+	void convert_linear_swizzle_3d(void *input_pixels, void *output_pixels, u16 width, u16 height, u16 depth)
 	{
 		if (depth == 1)
 		{
-			convert_linear_swizzle<T, true>(input_pixels, output_pixels, width, height, width * sizeof(T));
+			convert_linear_swizzle<T>(input_pixels, output_pixels, width, height, width * sizeof(T), true);
 			return;
 		}
 
-		auto src = static_cast<const T*>(input_pixels);
-		auto dst = static_cast<T*>(output_pixels);
+		T *src = static_cast<T*>(input_pixels);
+		T *dst = static_cast<T*>(output_pixels);
 
 		const u32 log2_w = ceil_log2(width);
 		const u32 log2_h = ceil_log2(height);
@@ -459,14 +456,14 @@ namespace rsx
 	 * TODO: Variable src/dst and optional se conversion
 	 */
 	template <typename T>
-	void shuffle_texel_data_wzyx(void* data, u16 row_pitch_in_bytes, u16 row_length_in_texels, u16 num_rows)
+	void shuffle_texel_data_wzyx(void *data, u16 row_pitch_in_bytes, u16 row_length_in_texels, u16 num_rows)
 	{
-		char* raw_src = static_cast<char*>(data);
+		char *raw_src = (char*)data;
 		T tmp[4];
 
 		for (u16 n = 0; n < num_rows; ++n)
 		{
-			T* src = reinterpret_cast<T*>(raw_src);
+			T* src = (T*)raw_src;
 			raw_src += row_pitch_in_bytes;
 
 			for (u16 m = 0; m < row_length_in_texels; ++m)
@@ -507,7 +504,7 @@ namespace rsx
 				else
 					width = parent_width;
 
-				x = static_cast<T>(0);
+				x = (T)0;
 			}
 			else
 			{
@@ -527,7 +524,7 @@ namespace rsx
 				else
 					height = parent_height;
 
-				y = static_cast<T>(0);
+				y = (T)0;
 			}
 			else
 			{
@@ -577,7 +574,7 @@ namespace rsx
 
 	static inline const f32 get_resolution_scale()
 	{
-		return g_cfg.video.strict_rendering_mode? 1.f : (g_cfg.video.resolution_scale_percent / 100.f);
+		return g_cfg.video.strict_rendering_mode? 1.f : ((f32)g_cfg.video.resolution_scale_percent / 100.f);
 	}
 
 	static inline const int get_resolution_scale_percent()
@@ -594,9 +591,9 @@ namespace rsx
 			return value;
 
 		else if (clamp)
-			return static_cast<u16>(std::max((get_resolution_scale_percent() * value) / 100, 1));
+			return (u16)std::max((get_resolution_scale_percent() * value) / 100, 1);
 		else
-			return static_cast<u16>((get_resolution_scale_percent() * value) / 100);
+			return (get_resolution_scale_percent() * value) / 100;
 	}
 
 	static inline const u16 apply_inverse_resolution_scale(u16 value, bool clamp)
@@ -604,9 +601,9 @@ namespace rsx
 		u16 result = value;
 
 		if (clamp)
-			result = static_cast<u16>(std::max((value * 100) / get_resolution_scale_percent(), 1));
+			result = (u16)std::max((value * 100) / get_resolution_scale_percent(), 1);
 		else
-			result = static_cast<u16>((value * 100) / get_resolution_scale_percent());
+			result = (value * 100) / get_resolution_scale_percent();
 
 		if (result <= g_cfg.video.min_scalable_dimension)
 			return value;
@@ -717,14 +714,14 @@ namespace rsx
 	// before actually attempting to translate to the internal address. Seen happening heavily in R&C games
 	static inline u32 get_vertex_offset_from_base(u32 vert_data_base_offset, u32 vert_base_offset)
 	{
-		return (vert_data_base_offset + vert_base_offset) & 0xFFFFFFF;
+		return ((u64)vert_data_base_offset + vert_base_offset) & 0xFFFFFFF;
 	}
 
 	// Similar to vertex_offset_base calculation, the rsx internally adds and masks index
 	// before using
 	static inline u32 get_index_from_base(u32 index, u32 index_base)
 	{
-		return (index + index_base) & 0x000FFFFF;
+		return ((u64)index + index_base) & 0x000FFFFF;
 	}
 
 	// Convert color write mask for G8B8 to R8G8
@@ -737,36 +734,12 @@ namespace rsx
 		return result;
 	}
 
-	static inline void get_g8b8_r8g8_colormask(bool &red, bool &/*green*/, bool &blue, bool &alpha)
+	static inline void get_g8b8_r8g8_colormask(bool &red, bool &green, bool &blue, bool &alpha)
 	{
 		red = blue;
+		green = green;
 		blue = false;
 		alpha = false;
-	}
-
-	static inline void get_g8b8_clear_color(u8& red, u8& /*green*/, u8& blue, u8& /*alpha*/)
-	{
-		red = blue;
-	}
-
-	static inline u32 get_abgr8_colormask(u32 mask)
-	{
-		u32 result = 0;
-		if (mask & 0x10) result |= 0x40;
-		if (mask & 0x20) result |= 0x20;
-		if (mask & 0x40) result |= 0x10;
-		if (mask & 0x80) result |= 0x80;
-		return result;
-	}
-
-	static inline void get_abgr8_colormask(bool& red, bool& /*green*/, bool& blue, bool& /*alpha*/)
-	{
-		std::swap(red, blue);
-	}
-
-	static inline void get_abgr8_clear_color(u8& red, u8& /*green*/, u8& blue, u8& /*alpha*/)
-	{
-		std::swap(red, blue);
 	}
 
 	static inline color4f decode_border_color(u32 colorref)
@@ -779,63 +752,8 @@ namespace rsx
 		return result;
 	}
 
-	template <uint integer, uint frac, bool sign = true, typename To = f32>
-	static inline To decode_fxp(u32 bits)
-	{
-		static_assert(u64{sign} + integer + frac <= 32, "Invalid decode_fxp range");
-
-		// Classic fixed point, see PGRAPH section of nouveau docs for TEX_FILTER (lod_bias) and TEX_CONTROL (min_lod, max_lod)
-		// Technically min/max lod are fixed 4.8 but a 5.8 decoder should work just as well since sign bit is 0
-
-		if constexpr (sign) if (bits & (1 << (integer + frac)))
-		{
-			bits = (0 - bits) & (~0u >> (31 - (integer + frac)));
-			return bits / (-To(1u << frac));
-		}
-
-		return bits / To(1u << frac);
-	}
-
-	static inline f32 decode_fp16(u16 bits)
-	{
-		if (bits == 0)
-		{
-			return 0.f;
-		}
-
-		// Extract components
-		unsigned int sign = (bits >> 15) & 1;
-		unsigned int exp = (bits >> 10) & 0x1f;
-		unsigned int mantissa = bits & 0x3ff;
-
-		float base = (sign != 0) ? -1.f : 1.f;
-		float scale;
-
-		if (exp == 0x1F)
-		{
-			// specials (nan, inf)
-			u32 nan = 0x7F800000 | mantissa;
-			nan |= (sign << 31);
-			return std::bit_cast<f32>(nan);
-		}
-		else if (exp > 0)
-		{
-			// normal number, borrows a '1' from the hidden mantissa bit
-			base *= std::exp2f(f32(exp) - 15.f);
-			scale = (float(mantissa) / 1024.f) + 1.f;
-		}
-		else
-		{
-			// subnormal number, borrows a '0' from the hidden mantissa bit
-			base *= std::exp2f(1.f - 15.f);
-			scale = float(mantissa) / 1024.f;
-		}
-
-		return base * scale;
-	}
-
 	template <int N>
-	void unpack_bitset(const std::bitset<N>& block, u64* values)
+	void unpack_bitset(std::bitset<N>& block, u64* values)
 	{
 		constexpr int count = N / 64;
 		for (int n = 0; n < count; ++n)
@@ -911,12 +829,6 @@ namespace rsx
 			m_data.fetch_or(static_cast<bitmask_type>(mask));
 		}
 
-		bool test_and_set(T mask)
-		{
-			const auto old = m_data.fetch_or(static_cast<bitmask_type>(mask));
-			return (old & static_cast<bitmask_type>(mask)) != 0;
-		}
-
 		auto clear(T mask)
 		{
 			bitmask_type clear_mask = ~(static_cast<bitmask_type>(mask));
@@ -954,7 +866,7 @@ namespace rsx
 			reserve(initial_size);
 			_size = initial_size;
 
-			for (u32 n = 0; n < initial_size; ++n)
+			for (int n = 0; n < initial_size; ++n)
 			{
 				_data[n] = val;
 			}
@@ -962,7 +874,7 @@ namespace rsx
 
 		simple_array(const std::initializer_list<Ty>& args)
 		{
-			reserve(::size32(args));
+			reserve(args.size());
 
 			for (const auto& arg : args)
 			{
@@ -976,7 +888,7 @@ namespace rsx
 			_size = other._size;
 
 			const auto size_bytes = sizeof(Ty) * _capacity;
-			_data = static_cast<Ty*>(malloc(size_bytes));
+			_data = (Ty*)malloc(size_bytes);
 			std::memcpy(_data, other._data, size_bytes);
 		}
 
@@ -1007,7 +919,15 @@ namespace rsx
 			if (_capacity >= size)
 				return;
 
-			verify("realloc() failed!" HERE), _data = static_cast<Ty*>(std::realloc(_data, sizeof(Ty) * size));
+			if (_data)
+			{
+				verify("realloc() failed!" HERE), _data = (Ty*)realloc(_data, sizeof(Ty) * size);
+			}
+			else
+			{
+				verify("malloc() failed!" HERE), _data = (Ty*)malloc(sizeof(Ty) * size);
+			}
+
 			_capacity = size;
 		}
 
@@ -1183,7 +1103,7 @@ namespace rsx
 
 		void start()
 		{
-			if (enabled) [[unlikely]]
+			if (UNLIKELY(enabled))
 			{
 				last = steady_clock::now();
 			}
@@ -1191,7 +1111,7 @@ namespace rsx
 
 		s64 duration()
 		{
-			if (!enabled) [[likely]]
+			if (LIKELY(!enabled))
 			{
 				return 0ll;
 			}
